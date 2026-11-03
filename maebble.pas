@@ -740,7 +740,7 @@ var
 begin
   RandomUUID(itemId);
   ZeroUUID(parentId);
-  unixTs := Cardinal(StrToQWordDef(ts, 0)) div 1000;
+  unixTs := Cardinal(StrToQWordDef(ts, 0) div 1000);
 
   // Attribute 0x01: sender (length LE, content)
   senderBytes := BytesOfTrunc(sender, 64);
