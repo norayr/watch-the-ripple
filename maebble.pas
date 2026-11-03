@@ -1163,6 +1163,8 @@ begin
   if g_print_maemo then
     WriteLn('Initial watermark: ', g_initial_watermark);
 
+  lastNotifiedId := g_initial_watermark;
+
   { Daemon mode }
   BeginThread(@DbusThreadFunc, nil, dbusTid);
 
