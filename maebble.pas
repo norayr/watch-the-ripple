@@ -525,14 +525,20 @@ var
   outgoing: Boolean;
   contact: AnsiString;
   i: Integer;
+  watermark: Integer;
 begin
   Result := 0;
+  watermark := LastNotifiedId;
+  if watermark = 0 then
+    watermark := g_initial_watermark;
+  if watermark = 0 then
+    Exit;
   if not RunCapture('sqlite3',
        ['-separator', #31, ContactsDbFile,
         Format('SELECT id, COALESCE(remote_uid,''''), COALESCE(channel,''''), ' +
                'COALESCE(free_text,''''), COALESCE(outgoing,0) ' +
                'FROM Events WHERE id > %d ORDER BY id ASC LIMIT 20',
-               [lastNotifiedId])], outStr) then
+               [watermark])], outStr) then
     Exit;
 
   if outStr = '' then Exit;
