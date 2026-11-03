@@ -572,6 +572,30 @@ begin
   Result := data;
 end;
 
+function HandlePhoneVersion(endpoint: Word; const data: TBytes; s: cint): TBytes;
+var
+  msg: TBytes;
+  session, remote: Cardinal;
+begin
+  if g_print_maemo then
+    WriteLn('PHONE_VERSION request received');
+  session := $80000000;      // GAMMA_RAY
+  remote  := 16 or 32 or 2;  // TELEPHONY | SMS | ANDROID = 50
+  msg := Bytes([1]);
+  msg := Cat(msg, Bytes([$FF, $FF, $FF, $FF]));  // -1 as signed int32, big-endian
+  msg := Cat(msg, PackU32BE(session));
+  msg := Cat(msg, PackU32BE(remote));
+  BtSendAll(s, BuildMessage(ENDPOINT_PHONE_VERSION, msg));
+  Result := data;
+end;
+
+function HandleSystemMessage(endpoint: Word; const data: TBytes; s: cint): TBytes;
+begin
+  if (Length(data) >= 2) and g_print_maemo then
+    WriteLn(Format('SYSTEM_MESSAGE: type=$%.2x code=$%.2x', [data[0], data[1]]));
+  Result := data;
+end;
+
 function HandleVersion(endpoint: Word; const data: TBytes; s: cint): TBytes;
 var
   normal_fw, recovery_fw: AnsiString;
@@ -649,11 +673,14 @@ begin
     if ep = endpoint_name then Exit(True);
 
     case ep of
-      ENDPOINT_PING:          HandlePing(ep, resp, s);
-      ENDPOINT_VERSION:       HandleVersion(ep, resp, s);
-      ENDPOINT_TIME:          HandleTime(ep, resp, s);
-      ENDPOINT_MUSIC_CONTROL: HandleMusicControl(ep, resp, s);
+      ENDPOINT_PING:           HandlePing(ep, resp, s);
+      ENDPOINT_VERSION:        HandleVersion(ep, resp, s);
+      ENDPOINT_PHONE_VERSION:  HandlePhoneVersion(ep, resp, s);
+      ENDPOINT_SYSTEM_MESSAGE: HandleSystemMessage(ep, resp, s);
+      ENDPOINT_TIME:           HandleTime(ep, resp, s);
+      ENDPOINT_MUSIC_CONTROL:  HandleMusicControl(ep, resp, s);
     end;
+
   end;
   Result := False;
 end;
@@ -674,11 +701,14 @@ begin
     data := nil;
 
   case ep of
-    ENDPOINT_PING:          HandlePing(ep, data, s);
-    ENDPOINT_VERSION:       HandleVersion(ep, data, s);
-    ENDPOINT_TIME:          HandleTime(ep, data, s);
-    ENDPOINT_MUSIC_CONTROL: HandleMusicControl(ep, data, s);
+    ENDPOINT_PING:           HandlePing(ep, data, s);
+    ENDPOINT_VERSION:        HandleVersion(ep, data, s);
+    ENDPOINT_PHONE_VERSION:  HandlePhoneVersion(ep, data, s);
+    ENDPOINT_SYSTEM_MESSAGE: HandleSystemMessage(ep, data, s);
+    ENDPOINT_TIME:           HandleTime(ep, data, s);
+    ENDPOINT_MUSIC_CONTROL:  HandleMusicControl(ep, data, s);
   end;
+
   Result := True;
 end;
 
@@ -729,14 +759,13 @@ begin
 
   try
     WriteLn('Connected to ', g_bt_address);
-    if not Ping(g_sock) then
+    if not GetVersions(g_sock) then
     begin
-      WriteLn('Ping failed.');
+      WriteLn('GetVersions failed.');
       Exit(False);
     end;
-    WriteLn('Ping OK.');
+    WriteLn('Connected, watch version: ', g_watch_version);
 
-    GetVersions(g_sock);
     SetTime(g_sock, GetLocalTimeUnix);
 
     // SMOKE TEST — comment this out once you've seen it on the watch
@@ -776,7 +805,7 @@ begin
       Halt(1);
     end;
     try
-      Ping(g_sock);
+      //Ping(g_sock);
       GetVersions(g_sock);   // needed so g_watch_version is set
       SetTime(g_sock, GetLocalTimeUnix);
       if ParamCount >= 3 then
