@@ -9,6 +9,7 @@ uses
   SysUtils, Classes, ctypes, bluetooth;
 
 const
+  MAEBBLE_VERSION = '0.1.0';
   ENDPOINT_FIRMWARE        = 1;
   ENDPOINT_TIME            = 11;
   ENDPOINT_VERSION         = 16;
@@ -51,7 +52,7 @@ function  LookupContact(const number: string): string;
 implementation
 
 uses
-  Sockets, Unix, BaseUnix, IniFiles, DateUtils, Types;
+  Sockets, Unix, BaseUnix, IniFiles, DateUtils, Types, SyncObjs, Process;
 
 type
   TBytes = array of Byte;
@@ -66,8 +67,39 @@ var
   g_watch_version: string  = 'v1.00.0';
   g_print_maemo:   Boolean = False;
   g_sock:          cint    = -1;
+  g_sock_lock:     TCriticalSection = nil;
+  g_initial_watermark: Integer = 0;
+
+procedure ShowHelp;
+begin
+  WriteLn('maebbled ', MAEBBLE_VERSION);
+  WriteLn('Pebble companion daemon for Maemo');
+  WriteLn;
+  WriteLn('Usage:');
+  WriteLn('  maebbled [OPTIONS]');
+  WriteLn;
+  WriteLn('Options:');
+  WriteLn('  -h, --help                     Show this help and exit');
+  WriteLn('      --version                  Show version and exit');
+  WriteLn('  -v, --verbose                  Verbose / debug output');
+  WriteLn('      --print_maemo              Alias for --verbose (legacy)');
+  WriteLn('      --test-sms SENDER BODY');
+  WriteLn('                                     Send one SMS notification and exit');
+  WriteLn('      --test-email SENDER SUBJECT BODY');
+  WriteLn('                                     Send one email notification and exit');
+  WriteLn;
+  WriteLn('Config file:');
+  WriteLn('  ', CONFIG_FILE);
+  WriteLn('  (fallback: ./maebble.cfg in the current directory)');
+  WriteLn;
+  WriteLn('With no options, connects to the Pebble configured in maebble.cfg,');
+  WriteLn('sends VERSION/TIME/PING handshake, then listens on D-Bus for');
+  WriteLn('incoming SMS and relays them to the watch until killed (Ctrl+C).');
+end;
+
 
 function GetLocalTimeUnix: Cardinal; forward;
+
 
 { ================= byte / string helpers ================= }
 
@@ -257,56 +289,431 @@ begin
 end;
 
 procedure Send(endpoint: Word; const payload: TBytes);
+var
+  msg: TBytes;
 begin
-  if g_sock < 0 then Exit;
-  BtSendAll(g_sock, BuildMessage(endpoint, payload));
+  g_sock_lock.Enter;
+  try
+    if g_sock < 0 then Exit;
+    msg := BuildMessage(endpoint, payload);
+    BtSendAll(g_sock, msg);
+  finally
+    g_sock_lock.Leave;
+  end;
 end;
 
 { ================= external command helpers ================= }
 
-function RunCapture(const cmd: string; out output: string): Boolean;
+function RunCapture(const exe: string; const args: array of string; out output: string): Boolean;
 var
-  f: Text;
-  s, tmpFile: string;
+  p: TProcess;
+  buf: array[0..1023] of Byte;
+  n: LongInt;
+  ms: TMemoryStream;
+  i: Integer;
 begin
-  output  := '';
-  tmpFile := '/tmp/.maebble.out.' + IntToStr(fpGetPid);
-  fpSystem(PChar(cmd + ' > ' + tmpFile + ' 2>/dev/null'));
   Result := False;
-  if not FileExists(tmpFile) then Exit;
-  AssignFile(f, tmpFile);
-  {$I-} Reset(f); {$I+}
-  if IOResult <> 0 then
-  begin
-    DeleteFile(tmpFile);
-    Exit;
+  output := '';
+  p := TProcess.Create(nil);
+  ms := TMemoryStream.Create;
+  try
+    p.Executable := exe;
+    for i := 0 to High(args) do
+      p.Parameters.Add(args[i]);
+    p.Options := [poUsePipes];
+    try
+      p.Execute;
+    except
+      Exit;
+    end;
+    repeat
+      n := p.Output.Read(buf, SizeOf(buf));
+      if n > 0 then ms.Write(buf, n);
+    until n <= 0;
+    SetLength(output, ms.Size);
+    if ms.Size > 0 then
+    begin
+      ms.Position := 0;
+      ms.Read(output[1], ms.Size);
+    end;
+    p.WaitOnExit;
+    Result := p.ExitStatus = 0;
+  finally
+    ms.Free;
+    p.Free;
   end;
-  while not EOF(f) do
-  begin
-    ReadLn(f, s);
-    output := output + s + #10;
-  end;
-  CloseFile(f);
-  DeleteFile(tmpFile);
-  Result := True;
 end;
+
+
+function ContactsDbFile: string;
+var
+  home: string;
+begin
+  home := GetEnvironmentVariable('HOME');
+  if home <> '' then
+    Result := home + '/.rtcom-eventlogger/el-v1.db'
+  else
+    Result := CONTACTS_DB;
+end;
+
+function QueryMaxEventId: Integer;
+var
+  outStr: string;
+begin
+  Result := 0;
+  if RunCapture('sqlite3',
+       [ContactsDbFile, 'SELECT MAX(id) FROM Events'], outStr) then
+  begin
+    outStr := Trim(StringReplace(outStr, #10, '', [rfReplaceAll]));
+    Result := StrToIntDef(outStr, 0);
+  end;
+end;
+
 
 { ================= contact lookup (sqlite3 CLI) ================= }
 
 function LookupContact(const number: string): string;
 var
-  outStr, s: string;
+  outStr: string;
 begin
   Result := number;
-  if not FileExists(CONTACTS_DB) then Exit;
-  s := StringReplace(number, '''', '''''', [rfReplaceAll]);
-  if RunCapture('sqlite3 ' + CONTACTS_DB +
-                ' "SELECT remote_name FROM remotes WHERE remote_uid=''' + s + '''"',
-                outStr) then
+  if not FileExists(ContactsDbFile) then Exit;
+  if RunCapture('sqlite3',
+       [ContactsDbFile,
+        'SELECT remote_name FROM remotes WHERE remote_uid=' + QuotedStr(number)],
+       outStr) then
   begin
     outStr := Trim(StringReplace(outStr, #10, '', [rfReplaceAll]));
     if outStr <> '' then Result := outStr;
   end;
+end;
+
+
+{ ================= PDU decoding (SMS) ================= }
+
+const
+  GSM7_CODEPOINTS: array[0..127] of Word = (
+    $0040, $00A3, $0024, $00A5, $00E8, $00E9, $00F9, $00EC, $00F2, $00C7, $000A, $00D8, $00F8, $000D, $00C5, $00E5,
+    $0394, $005F, $03A6, $0393, $039B, $03A9, $03A0, $03A8, $03A3, $0398, $039E, $0020, $00C6, $00E6, $00DF, $00C9,
+    $0020, $0021, $0022, $0023, $00A4, $0025, $0026, $0027, $0028, $0029, $002A, $002B, $002C, $002D, $002E, $002F,
+    $0030, $0031, $0032, $0033, $0034, $0035, $0036, $0037, $0038, $0039, $003A, $003B, $003C, $003D, $003E, $003F,
+    $00A1, $0041, $0042, $0043, $0044, $0045, $0046, $0047, $0048, $0049, $004A, $004B, $004C, $004D, $004E, $004F,
+    $0050, $0051, $0052, $0053, $0054, $0055, $0056, $0057, $0058, $0059, $005A, $00C4, $00D6, $00D1, $00DC, $00A7,
+    $00BF, $0061, $0062, $0063, $0064, $0065, $0066, $0067, $0068, $0069, $006A, $006B, $006C, $006D, $006E, $006F,
+    $0070, $0071, $0072, $0073, $0074, $0075, $0076, $0077, $0078, $0079, $007A, $00E4, $00F6, $00F1, $00FC, $00E0
+  );
+
+function HexToBytes(const S: string): TBytes;
+  function HexVal(C: Char): Byte;
+  begin
+    case C of
+      '0'..'9': Result := Ord(C) - Ord('0');
+      'A'..'F': Result := Ord(C) - Ord('A') + 10;
+      'a'..'f': Result := Ord(C) - Ord('a') + 10;
+      else Result := 0;
+    end;
+  end;
+var
+  i, n: Integer;
+begin
+  Result := nil;
+  n := 0;
+  SetLength(Result, Length(S) div 2);
+  i := 1;
+  while i < Length(S) do
+  begin
+    if not (S[i] in ['0'..'9','A'..'F','a'..'f']) or
+       not (S[i+1] in ['0'..'9','A'..'F','a'..'f']) then
+    begin
+      Inc(i);
+      Continue;
+    end;
+    Result[n] := (HexVal(S[i]) shl 4) or HexVal(S[i+1]);
+    Inc(n);
+    Inc(i, 2);
+  end;
+  SetLength(Result, n);
+end;
+
+function DecodeUCS2(const Data: TBytes): AnsiString;
+var
+  i, N: Integer;
+  U: UnicodeString;
+begin
+  N := Length(Data) div 2;
+  SetLength(U, N);
+  for i := 0 to N - 1 do
+    U[i+1] := WideChar((Word(Data[i*2]) shl 8) or Word(Data[i*2+1]));
+  Result := UTF8Encode(U);
+end;
+
+function DecodeGSM7(const compressed: TBytes; NumSeptets: Integer): AnsiString;
+var
+  i, bit, byteIdx, bitInByte, septet: Integer;
+  U: UnicodeString;
+begin
+  if NumSeptets <= 0 then Exit('');
+  SetLength(U, NumSeptets);
+  for i := 0 to NumSeptets - 1 do
+  begin
+    bit := i * 7;
+    byteIdx := bit div 8;
+    bitInByte := bit mod 8;
+    if byteIdx >= Length(compressed) then
+    begin
+      SetLength(U, i);
+      Break;
+    end;
+    septet := compressed[byteIdx] shr bitInByte;
+    if (bitInByte > 1) and (byteIdx + 1 < Length(compressed)) then
+      septet := septet or (compressed[byteIdx + 1] shl (8 - bitInByte));
+    septet := septet and $7F;
+    U[i+1] := WideChar(GSM7_CODEPOINTS[septet]);
+  end;
+  Result := UTF8Encode(U);
+end;
+
+function DecodeSMSDeliverPDU(const PDU: TBytes; out Body: AnsiString): Boolean;
+var
+  FirstOctet, AddrBytes, Ptr, TpDcs, Udl: Integer;
+  Ud: TBytes;
+begin
+  Result := False;
+  Body := '';
+  if Length(PDU) < 4 then Exit;
+  FirstOctet := PDU[0];
+  if (FirstOctet and $03) <> 0 then Exit;  // not SMS-DELIVER
+
+  AddrBytes := (PDU[1] + 1) div 2;
+  Ptr := 3 + AddrBytes;
+  if Length(PDU) < Ptr + 10 then Exit;
+
+  TpDcs := PDU[Ptr + 1];
+  Udl   := PDU[Ptr + 9];
+
+  SetLength(Ud, Length(PDU) - (Ptr + 10));
+  if Length(Ud) > 0 then
+    Move(PDU[Ptr + 10], Ud[0], Length(Ud));
+
+  if (TpDcs and $08) <> 0 then
+  begin
+    if Udl > 0 then
+      Body := DecodeUCS2(Copy(Ud, 0, Udl * 2))
+    else
+      Body := DecodeUCS2(Ud);
+  end
+  else
+  begin
+    if Udl > 0 then
+      Body := DecodeGSM7(Ud, Udl)
+    else
+      Body := DecodeGSM7(Ud, (Length(Ud) * 8) div 7);
+  end;
+  Result := True;
+end;
+
+{ ================= D-Bus SMS listener ================= }
+
+function QueryEventDetails(eventId: Integer;
+  out sender, channel, body: AnsiString; out outgoing: Boolean): Boolean;
+const
+  SEP = #31;   // ASCII unit separator — won't appear in real text
+var
+  outStr: string;
+  parts: TStringArray;
+begin
+  Result := False;
+  sender := ''; channel := ''; body := ''; outgoing := False;
+
+  if not RunCapture('sqlite3',
+       ['-separator', SEP, ContactsDbFile,
+        Format('SELECT COALESCE(remote_uid,''''), ' +
+               'COALESCE(channel,''''), ' +
+               'COALESCE(free_text,''''), ' +
+               'COALESCE(outgoing,0) ' +
+               'FROM Events WHERE id=%d', [eventId])], outStr) then
+    Exit;
+
+  // Strip only the trailing newline(s) that sqlite3 appends
+  if (Length(outStr) > 0) and (outStr[Length(outStr)] = #10) then
+    Delete(outStr, Length(outStr), 1);
+  if (Length(outStr) > 0) and (outStr[Length(outStr)] = #13) then
+    Delete(outStr, Length(outStr), 1);
+
+  if outStr = '' then Exit;
+
+  parts := outStr.Split([SEP]);
+  if Length(parts) < 4 then Exit;
+
+  sender   := parts[0];
+  channel  := parts[1];
+  body     := parts[2];
+  outgoing := (Trim(parts[3]) = '1') or (LowerCase(Trim(parts[3])) = 'true');
+  Result := True;
+end;
+
+function DbusThreadFunc(Param: Pointer): PtrInt;
+var
+  pipeFds: array[0..1] of cint;
+  childPid: TPid;
+  buf: array[0..2047] of Char;
+  n, i, status: Integer;
+  partial, line, t: string;
+  inSignal: Boolean;
+  eventId: Integer;
+  argStrings: array[0..7] of string;
+  argCount: Integer;
+  lastNotifiedId: Integer;
+  channel, sender, body: AnsiString;
+  contact: AnsiString;
+  outgoing: Boolean;
+  argv: array[0..4] of PChar;
+  lastQueryId: Integer;
+
+  procedure DispatchEvent;
+  var
+    retries: Integer;
+    ok: Boolean;
+  begin
+    if not inSignal then Exit;
+    inSignal := False;
+    if eventId <= lastNotifiedId then Exit;
+    if eventId <= 0 then Exit;
+
+    // Retry: on `NewEvent` the DB write may not have committed yet.
+    ok := False;
+    for retries := 1 to 5 do
+    begin
+      if QueryEventDetails(eventId, sender, channel, body, outgoing) then
+      begin
+        if outgoing then
+        begin
+          lastNotifiedId := eventId;
+          Exit;
+        end;
+        if body <> '' then
+        begin
+          ok := True;
+          Break;
+        end;
+      end;
+      Sleep(100);
+    end;
+
+    if not ok then
+    begin
+      if g_print_maemo then
+        WriteLn('[dbus] event ', eventId, ' no body after retries, skipped');
+      Exit;   // leave lastNotifiedId alone so a future EventUpdated retries
+    end;
+
+    if g_print_maemo then
+      WriteLn('[dbus] event ', eventId, ' from "', sender,
+              '" channel="', channel, '" bodylen=', Length(body));
+
+    contact := LookupContact(sender);
+    WriteLn('Message from ', contact, ' [', channel, ']: ', body);
+    try
+      NotificationSMS(contact, body);
+      lastNotifiedId := eventId;
+    except
+      on E: Exception do WriteLn('notify error: ', E.Message);
+    end;
+  end;
+
+
+  procedure ProcessLine(const L: string);
+  var
+    j: Integer;
+  begin
+    if g_print_maemo then
+      WriteLn('[raw] ', L);
+
+    if Pos('signal', L) = 1 then
+    begin
+      DispatchEvent;
+      if (Pos('member=NewEvent', L) > 0) or
+         (Pos('member=EventUpdated', L) > 0) then
+      begin
+        inSignal := True;
+        eventId  := 0;
+        argCount := 0;
+        for j := 0 to 7 do argStrings[j] := '';
+      end
+      else
+        inSignal := False;
+      Exit;
+    end;
+
+    if not inSignal then Exit;
+    t := Trim(L);
+
+    if Pos('int32 ', t) = 1 then
+    begin
+      eventId := StrToIntDef(Trim(Copy(t, 7, Length(t))), 0);
+      Exit;
+    end;
+
+    if Pos('string "', t) = 1 then
+    begin
+      t := Copy(t, 9, Length(t) - 8);
+      if (Length(t) > 0) and (t[Length(t)] = '"') then
+        Delete(t, Length(t), 1);
+      if argCount < 8 then argStrings[argCount] := t;
+      Inc(argCount);
+      Exit;
+    end;
+  end;
+
+begin
+  Result := 0;
+  lastNotifiedId := g_initial_watermark;
+  lastQueryId    := -1;
+  if g_print_maemo then
+    WriteLn('D-Bus thread: watermark = ', lastNotifiedId);
+
+  if fpPipe(pipeFds) <> 0 then Exit;
+  childPid := fpFork;
+  if childPid = 0 then
+  begin
+    fpClose(pipeFds[0]);
+    fpDup2(pipeFds[1], 1);
+    fpClose(pipeFds[1]);
+    argv[0] := 'dbus-monitor';
+    argv[1] := '--session';
+    argv[2] := 'type=''signal'',interface=''rtcomeventlogger.signal''';
+    argv[3] := nil;
+    fpExecv('/usr/bin/dbus-monitor', @argv);
+    fpExit(127);
+  end;
+  fpClose(pipeFds[1]);
+  if g_print_maemo then
+    WriteLn('dbus-monitor spawned, pid=', childPid);
+
+  inSignal := False;
+  eventId  := 0;
+  argCount := 0;
+  partial  := '';
+  while True do
+  begin
+    n := fpRead(pipeFds[0], buf[0], SizeOf(buf));
+    if n <= 0 then Break;
+    partial := partial + Copy(buf, 1, n);
+    while True do
+    begin
+      i := Pos(#10, partial);
+      if i = 0 then Break;
+      line := Copy(partial, 1, i - 1);
+      Delete(partial, 1, i);
+      ProcessLine(line);
+    end;
+  end;
+  if g_print_maemo then
+    WriteLn('dbus-monitor pipe closed');
+
+  DispatchEvent;
+  fpClose(pipeFds[0]);
+  fpWaitPid(childPid, status, 0);
 end;
 
 { ================= notification v3 ================= }
@@ -474,10 +881,12 @@ begin
     Exit;
   end;
 
-  RunCapture('dbus-send --print-reply=literal ' +
-             '--dest=' + DBUS_MAFW_DEST + ' ' +
-             DBUS_MAFW_PATH + ' ' +
-             DBUS_MAFW_IFACE + '.get_status', outStr);
+  if not RunCapture('dbus-send',
+       ['--print-reply=literal',
+        '--dest=' + DBUS_MAFW_DEST,
+        DBUS_MAFW_PATH,
+        DBUS_MAFW_IFACE + '.get_status'], outStr) then
+    Exit;
   if outStr = '' then Exit;
 
   lines := TStringList.Create;
@@ -750,7 +1159,12 @@ end;
 function RunOnce: Boolean;
 begin
   Configure;
-  g_sock := BtConnect(g_bt_address);
+  g_sock_lock.Enter;
+  try
+    g_sock := BtConnect(g_bt_address);
+  finally
+    g_sock_lock.Leave;
+  end;
   if g_sock < 0 then
   begin
     WriteLn('Could not connect to ', g_bt_address);
@@ -769,7 +1183,7 @@ begin
     SetTime(g_sock, GetLocalTimeUnix);
 
     // SMOKE TEST — comment this out once you've seen it on the watch
-    NotificationSMS('Pascal', 'Hello from maebble.pas');
+    // NotificationSMS('Pascal', 'Hello from maebble.pas');
 
 
     while True do
@@ -779,18 +1193,43 @@ begin
     end;
     Result := True;
   finally
-    if g_sock >= 0 then
-    begin
-      CloseSocket(g_sock);
-      g_sock := -1;
+    g_sock_lock.Enter;
+    try
+      if g_sock >= 0 then
+      begin
+        CloseSocket(g_sock);
+        g_sock := -1;
+      end;
+    finally
+      g_sock_lock.Leave;
     end;
   end;
 end;
 
 procedure Main;
+var
+  dbusTid: TThreadID;
+  i: Integer;
 begin
   Randomize;
-  g_print_maemo := (ParamCount >= 1) and (ParamStr(1) = '--print_maemo');
+  g_print_maemo := False;
+
+  { Flag pre-scan — everything that doesn't need a BT connection }
+  for i := 1 to ParamCount do
+    case ParamStr(i) of
+      '-h', '--help':
+        begin
+          ShowHelp;
+          Halt(0);
+        end;
+      '--version':
+        begin
+          WriteLn('maebbled ', MAEBBLE_VERSION);
+          Halt(0);
+        end;
+      '-v', '--verbose', '--print_maemo':
+        g_print_maemo := True;
+    end;
 
   // One-shot notification test mode:
   //   ./maebbled --test-sms "sender" "body"
@@ -821,6 +1260,38 @@ begin
     Halt(0);
   end;
 
+ if (ParamCount >= 2) and (ParamStr(1) = '--test-email') then
+  begin
+    Configure;
+    g_sock := BtConnect(g_bt_address);
+    if g_sock < 0 then
+    begin
+      WriteLn('Could not connect');
+      Halt(1);
+    end;
+    try
+      GetVersions(g_sock);
+      SetTime(g_sock, GetLocalTimeUnix);
+      if ParamCount >= 5 then
+        NotificationEmail(ParamStr(2), ParamStr(3), ParamStr(4))
+      else
+        NotificationEmail('Pascal', 'Test subject', 'Test body');
+      WriteLn('Email notification sent.');
+      Sleep(2000);
+    finally
+      CloseSocket(g_sock);
+      g_sock := -1;
+    end;
+    Halt(0);
+  end;
+
+  g_initial_watermark := QueryMaxEventId;
+  if g_print_maemo then
+    WriteLn('Initial watermark: ', g_initial_watermark);
+
+  { Daemon mode }
+  BeginThread(@DbusThreadFunc, nil, dbusTid);
+
   while True do
   begin
     try
@@ -836,5 +1307,8 @@ begin
   end;
 end;
 
-
+initialization
+  g_sock_lock := TCriticalSection.Create;
+finalization
+  g_sock_lock.Free;
 end.

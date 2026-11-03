@@ -1,7 +1,23 @@
+PROJECT  = maebbled.lpr
+OUTFILE  = maebbled
+FPC      = fpc
+UNITS    = units
+PARAMS   = $(PROJECT) -FU$(UNITS) -MObjFPC -Sc -O1 -gl -vewnhi -l \
+           -Fu. -Fu./bluetoothlaz/source/package \
+           -o$(OUTFILE)
 
+all: $(OUTFILE)
 
-all:
-		fpc -FUunits -Fu./bluetoothlaz/source/package maebbled.lpr
+$(OUTFILE): $(PROJECT) maebble.pas bluetoothlaz/source/package/bluetooth.pas
+	@mkdir -p $(UNITS)
+	$(FPC) $(PARAMS)
 
-test:
-		./maebbled --test-sms "Alice" "Hello from the test mode"
+clean:
+	rm -f $(OUTFILE) $(OUTFILE).o maebble.o
+	rm -rf $(UNITS)
+
+test: $(OUTFILE)
+	./$(OUTFILE) --test-sms "Alice" "Hello from the test mode"
+
+.PHONY: all clean test
+
