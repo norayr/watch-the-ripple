@@ -69,6 +69,7 @@ var
   g_sock:          cint    = -1;
   g_sock_lock:     TCriticalSection = nil;
   g_initial_watermark: Integer = 0;
+  lastNotifiedId: Integer;
 
 procedure ShowHelp;
 begin
@@ -514,206 +515,79 @@ end;
 
 { ================= D-Bus SMS listener ================= }
 
-function QueryEventDetails(eventId: Integer;
-  out sender, channel, body: AnsiString; out outgoing: Boolean): Boolean;
-const
-  SEP = #31;   // ASCII unit separator — won't appear in real text
+function ScanForNewMessages: Integer;
 var
   outStr: string;
+  lines: TStringList;
   parts: TStringArray;
+  eventId: Integer;
+  sender, channel, body: AnsiString;
+  outgoing: Boolean;
+  contact: AnsiString;
+  i: Integer;
 begin
-  Result := False;
-  sender := ''; channel := ''; body := ''; outgoing := False;
-
+  Result := 0;
   if not RunCapture('sqlite3',
-       ['-separator', SEP, ContactsDbFile,
-        Format('SELECT COALESCE(remote_uid,''''), ' +
-               'COALESCE(channel,''''), ' +
-               'COALESCE(free_text,''''), ' +
-               'COALESCE(outgoing,0) ' +
-               'FROM Events WHERE id=%d', [eventId])], outStr) then
+       ['-separator', #31, ContactsDbFile,
+        Format('SELECT id, COALESCE(remote_uid,''''), COALESCE(channel,''''), ' +
+               'COALESCE(free_text,''''), COALESCE(outgoing,0) ' +
+               'FROM Events WHERE id > %d ORDER BY id ASC LIMIT 20',
+               [lastNotifiedId])], outStr) then
     Exit;
-
-  // Strip only the trailing newline(s) that sqlite3 appends
-  if (Length(outStr) > 0) and (outStr[Length(outStr)] = #10) then
-    Delete(outStr, Length(outStr), 1);
-  if (Length(outStr) > 0) and (outStr[Length(outStr)] = #13) then
-    Delete(outStr, Length(outStr), 1);
 
   if outStr = '' then Exit;
 
-  parts := outStr.Split([SEP]);
-  if Length(parts) < 4 then Exit;
+  lines := TStringList.Create;
+  try
+    lines.Text := outStr;
+    for i := 0 to lines.Count - 1 do
+    begin
+      if lines[i] = '' then Continue;
+      parts := lines[i].Split([#31]);
+      if Length(parts) < 5 then Continue;
 
-  sender   := parts[0];
-  channel  := parts[1];
-  body     := parts[2];
-  outgoing := (Trim(parts[3]) = '1') or (LowerCase(Trim(parts[3])) = 'true');
-  Result := True;
+      eventId  := StrToIntDef(parts[0], 0);
+      if eventId <= lastNotifiedId then Continue;
+
+      sender   := parts[1];
+      channel  := parts[2];
+      body     := parts[3];
+      outgoing := (parts[4] = '1') or (LowerCase(parts[4]) = 'true');
+
+      // Advance watermark unconditionally — we've seen this event.
+      lastNotifiedId := eventId;
+
+      if outgoing then Continue;
+      if body = '' then Continue;
+
+      contact := LookupContact(sender);
+      WriteLn('Message from ', contact, ' [', channel, ']: ', body);
+      try
+        NotificationSMS(contact, body);
+        Inc(Result);
+      except
+        on E: Exception do WriteLn('notify error: ', E.Message);
+      end;
+    end;
+  finally
+    lines.Free;
+  end;
 end;
 
 function DbusThreadFunc(Param: Pointer): PtrInt;
-var
-  pipeFds: array[0..1] of cint;
-  childPid: TPid;
-  buf: array[0..2047] of Char;
-  n, i, status: Integer;
-  partial, line, t: string;
-  inSignal: Boolean;
-  eventId: Integer;
-  argStrings: array[0..7] of string;
-  argCount: Integer;
-  lastNotifiedId: Integer;
-  channel, sender, body: AnsiString;
-  contact: AnsiString;
-  outgoing: Boolean;
-  argv: array[0..4] of PChar;
-  lastQueryId: Integer;
-
-  procedure DispatchEvent;
-  var
-    retries: Integer;
-    ok: Boolean;
-  begin
-    if not inSignal then Exit;
-    inSignal := False;
-    if eventId <= lastNotifiedId then Exit;
-    if eventId <= 0 then Exit;
-
-    // Retry: on `NewEvent` the DB write may not have committed yet.
-    ok := False;
-    for retries := 1 to 5 do
-    begin
-      if QueryEventDetails(eventId, sender, channel, body, outgoing) then
-      begin
-        if outgoing then
-        begin
-          lastNotifiedId := eventId;
-          Exit;
-        end;
-        if body <> '' then
-        begin
-          ok := True;
-          Break;
-        end;
-      end;
-      Sleep(100);
-    end;
-
-    if not ok then
-    begin
-      if g_print_maemo then
-        WriteLn('[dbus] event ', eventId, ' no body after retries, skipped');
-      Exit;   // leave lastNotifiedId alone so a future EventUpdated retries
-    end;
-
-    if g_print_maemo then
-      WriteLn('[dbus] event ', eventId, ' from "', sender,
-              '" channel="', channel, '" bodylen=', Length(body));
-
-    contact := LookupContact(sender);
-    WriteLn('Message from ', contact, ' [', channel, ']: ', body);
-    try
-      NotificationSMS(contact, body);
-      lastNotifiedId := eventId;
-    except
-      on E: Exception do WriteLn('notify error: ', E.Message);
-    end;
-  end;
-
-
-  procedure ProcessLine(const L: string);
-  var
-    j: Integer;
-  begin
-    if g_print_maemo then
-      WriteLn('[raw] ', L);
-
-    if Pos('signal', L) = 1 then
-    begin
-      DispatchEvent;
-      if (Pos('member=NewEvent', L) > 0) or
-         (Pos('member=EventUpdated', L) > 0) then
-      begin
-        inSignal := True;
-        eventId  := 0;
-        argCount := 0;
-        for j := 0 to 7 do argStrings[j] := '';
-      end
-      else
-        inSignal := False;
-      Exit;
-    end;
-
-    if not inSignal then Exit;
-    t := Trim(L);
-
-    if Pos('int32 ', t) = 1 then
-    begin
-      eventId := StrToIntDef(Trim(Copy(t, 7, Length(t))), 0);
-      Exit;
-    end;
-
-    if Pos('string "', t) = 1 then
-    begin
-      t := Copy(t, 9, Length(t) - 8);
-      if (Length(t) > 0) and (t[Length(t)] = '"') then
-        Delete(t, Length(t), 1);
-      if argCount < 8 then argStrings[argCount] := t;
-      Inc(argCount);
-      Exit;
-    end;
-  end;
-
 begin
   Result := 0;
-  lastNotifiedId := g_initial_watermark;
-  lastQueryId    := -1;
   if g_print_maemo then
-    WriteLn('D-Bus thread: watermark = ', lastNotifiedId);
-
-  if fpPipe(pipeFds) <> 0 then Exit;
-  childPid := fpFork;
-  if childPid = 0 then
-  begin
-    fpClose(pipeFds[0]);
-    fpDup2(pipeFds[1], 1);
-    fpClose(pipeFds[1]);
-    argv[0] := 'dbus-monitor';
-    argv[1] := '--session';
-    argv[2] := 'type=''signal'',interface=''rtcomeventlogger.signal''';
-    argv[3] := nil;
-    fpExecv('/usr/bin/dbus-monitor', @argv);
-    fpExit(127);
-  end;
-  fpClose(pipeFds[1]);
-  if g_print_maemo then
-    WriteLn('dbus-monitor spawned, pid=', childPid);
-
-  inSignal := False;
-  eventId  := 0;
-  argCount := 0;
-  partial  := '';
+    WriteLn('Scanner thread started (period 300ms)');
   while True do
   begin
-    n := fpRead(pipeFds[0], buf[0], SizeOf(buf));
-    if n <= 0 then Break;
-    partial := partial + Copy(buf, 1, n);
-    while True do
-    begin
-      i := Pos(#10, partial);
-      if i = 0 then Break;
-      line := Copy(partial, 1, i - 1);
-      Delete(partial, 1, i);
-      ProcessLine(line);
+    Sleep(300);
+    try
+      ScanForNewMessages;
+    except
+      on E: Exception do WriteLn('scan error: ', E.Message);
     end;
   end;
-  if g_print_maemo then
-    WriteLn('dbus-monitor pipe closed');
-
-  DispatchEvent;
-  fpClose(pipeFds[0]);
-  fpWaitPid(childPid, status, 0);
 end;
 
 { ================= notification v3 ================= }
