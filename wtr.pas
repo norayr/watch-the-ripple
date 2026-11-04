@@ -1,4 +1,4 @@
-unit maebble;
+unit wtr;
 
 {$mode objfpc}{$H+}
 {$linklib bluetooth}
@@ -9,7 +9,7 @@ uses
   SysUtils, Classes, ctypes, bluetooth;
 
 const
-  MAEBBLE_VERSION = '0.1.0';
+  WTR_VERSION = '0.1.0';
   ENDPOINT_FIRMWARE        = 1;
   ENDPOINT_TIME            = 11;
   ENDPOINT_VERSION         = 16;
@@ -23,7 +23,6 @@ const
   ENDPOINT_NOTIFICATION    = 3000;
   ENDPOINT_BLOB            = 45531;
 
-  CONFIG_FILE          = '/home/user/.config/maebble/maebble.cfg';
   DEFAULT_BT_ADDRESS   = '';
 
   NOTIF_SOURCE_EMAIL   = 19;
@@ -53,7 +52,8 @@ implementation
 
 uses
   Sockets, Unix, BaseUnix, IniFiles, DateUtils, Types, SyncObjs, Process,
-  notification_filters, event_scanner, database_watch, mail_cache, pebble_protocol;
+  notification_filters, event_scanner, database_watch, mail_cache, pebble_protocol,
+  wtr_config;
 
 type
   TBytes = TPebbleBytes;
@@ -81,11 +81,11 @@ var
 
 procedure ShowHelp;
 begin
-  WriteLn('maebbled ', MAEBBLE_VERSION);
-  WriteLn('Pebble companion daemon for Maemo');
+  WriteLn('wtrd ', WTR_VERSION);
+  WriteLn('Watch the Ripple - Pebble companion daemon for Maemo Leste');
   WriteLn;
   WriteLn('Usage:');
-  WriteLn('  maebbled [OPTIONS]');
+  WriteLn('  wtrd [OPTIONS]');
   WriteLn;
   WriteLn('Options:');
   WriteLn('  -h, --help                     Show this help and exit');
@@ -98,10 +98,11 @@ begin
   WriteLn('                                     Send one email notification and exit');
   WriteLn;
   WriteLn('Config file:');
-  WriteLn('  ', CONFIG_FILE);
-  WriteLn('  (fallback: ./maebble.cfg in the current directory)');
+  WriteLn('  ', ConfigFilePath);
+  WriteLn('  (legacy fallback: ', LegacyConfigFilePath, ')');
+  WriteLn('  (local fallbacks: ./wtr.conf, ./maebble.cfg)');
   WriteLn;
-  WriteLn('With no options, connects to the Pebble configured in maebble.cfg,');
+  WriteLn('With no options, connects to the Pebble configured in wtr.conf,');
   WriteLn('sends the VERSION/TIME handshake, then watches the event database');
   WriteLn('for incoming messages and the Modest IMAP inbox cache for email.');
   WriteLn('Notifications are relayed until killed (Ctrl+C).');
@@ -188,16 +189,6 @@ end;
 
 { ================= configuration ================= }
 
-function FindConfigFile: string;
-begin
-  if FileExists(CONFIG_FILE) then
-    Result := CONFIG_FILE
-  else if FileExists('maebble.cfg') then
-    Result := 'maebble.cfg'
-  else
-    Result := '';
-end;
-
 function DefaultMailCacheRoot: string;
 var Home: string;
 begin
@@ -215,7 +206,8 @@ begin
   cfgPath := FindConfigFile;
   if cfgPath = '' then
   begin
-    WriteLn('No config file found (looked in ', CONFIG_FILE, ' and ./maebble.cfg)');
+    WriteLn('No config file found (looked in ', ConfigFilePath, ', ',
+      LegacyConfigFilePath, ', ./wtr.conf and ./maebble.cfg)');
     Exit;
   end;
 
@@ -1233,7 +1225,7 @@ begin
         end;
       '--version':
         begin
-          WriteLn('maebbled ', MAEBBLE_VERSION);
+          WriteLn('wtrd ', WTR_VERSION);
           Halt(0);
         end;
       '-v', '--verbose', '--print_maemo':
@@ -1241,8 +1233,8 @@ begin
     end;
 
   // One-shot notification test mode:
-  //   ./maebbled --test-sms "sender" "body"
-  //   ./maebbled --test-email "sender" "subject" "body"
+  //   ./wtrd --test-sms "sender" "body"
+  //   ./wtrd --test-email "sender" "subject" "body"
   Configure;
 
   if (ParamCount >= 2) and (ParamStr(1) = '--test-sms') then

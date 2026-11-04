@@ -1,5 +1,5 @@
-PROJECT  = maebbled.lpr
-OUTFILE  = maebbled
+PROJECT  = wtrd.lpr
+OUTFILE  = wtrd
 FPC      = fpc
 UNITS    = units
 PARAMS   = $(PROJECT) -FU$(UNITS) -MObjFPC -Sc -O1 -gl -vewnhi -l \
@@ -8,12 +8,12 @@ PARAMS   = $(PROJECT) -FU$(UNITS) -MObjFPC -Sc -O1 -gl -vewnhi -l \
 
 all: $(OUTFILE)
 
-$(OUTFILE): $(PROJECT) maebble.pas notification_filters.pas event_scanner.pas database_watch.pas mail_cache.pas pebble_protocol.pas bluetoothlaz/source/package/bluetooth.pas
+$(OUTFILE): $(PROJECT) wtr.pas wtr_config.pas notification_filters.pas event_scanner.pas database_watch.pas mail_cache.pas pebble_protocol.pas bluetoothlaz/source/package/bluetooth.pas
 	@mkdir -p $(UNITS)
 	$(FPC) $(PARAMS)
 
 clean:
-	rm -f $(OUTFILE) $(OUTFILE).o maebble.o
+	rm -f $(OUTFILE) $(OUTFILE).o wtr.o
 	rm -rf $(UNITS)
 
 test: $(OUTFILE)

@@ -9,11 +9,12 @@ import tempfile
 
 root = pathlib.Path(__file__).resolve().parent.parent
 temp_root = "/tmp/opencode" if pathlib.Path("/tmp/opencode").is_dir() else None
-with tempfile.TemporaryDirectory(prefix="maebble-tests-", dir=temp_root) as temp:
+with tempfile.TemporaryDirectory(prefix="wtr-tests-", dir=temp_root) as temp:
     for name, fixture in [
         ("test_notifications", f"{temp}/events.db"),
         ("test_mail_cache", f"{temp}/mail"),
         ("test_pebble_protocol", f"{temp}/unused"),
+        ("test_wtr_config", f"{temp}/config"),
     ]:
         subprocess.run(
             [
@@ -24,4 +25,10 @@ with tempfile.TemporaryDirectory(prefix="maebble-tests-", dir=temp_root) as temp
             check=True,
             cwd=temp,
         )
-        subprocess.run([f"{temp}/{name}", fixture], check=True)
+        env = os.environ.copy()
+        if name == "test_wtr_config":
+            env.update(HOME=f"{fixture}/home", XDG_CONFIG_HOME="")
+        subprocess.run([f"{temp}/{name}", fixture], check=True, cwd=temp, env=env)
+        if name == "test_wtr_config":
+            env["XDG_CONFIG_HOME"] = f"{fixture}/xdg"
+            subprocess.run([f"{temp}/{name}", fixture], check=True, cwd=temp, env=env)

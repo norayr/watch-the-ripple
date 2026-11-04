@@ -1,4 +1,4 @@
-program maebbled;
+program wtrd;
 
 {$mode objfpc}{$H+}
 
@@ -8,7 +8,7 @@ uses
   {$ENDIF}
   SysUtils,
   Classes,
-  maebble in 'maebble.pas';
+  wtr in 'wtr.pas';
 
 //{$R *.res}
 
