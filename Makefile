@@ -8,7 +8,7 @@ PARAMS   = $(PROJECT) -FU$(UNITS) -MObjFPC -Sc -O1 -gl -vewnhi -l \
 
 all: $(OUTFILE)
 
-$(OUTFILE): $(PROJECT) maebble.pas notification_filters.pas event_scanner.pas database_watch.pas bluetoothlaz/source/package/bluetooth.pas
+$(OUTFILE): $(PROJECT) maebble.pas notification_filters.pas event_scanner.pas database_watch.pas mail_cache.pas pebble_protocol.pas bluetoothlaz/source/package/bluetooth.pas
 	@mkdir -p $(UNITS)
 	$(FPC) $(PARAMS)
 

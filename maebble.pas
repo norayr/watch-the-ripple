@@ -53,10 +53,10 @@ implementation
 
 uses
   Sockets, Unix, BaseUnix, IniFiles, DateUtils, Types, SyncObjs, Process,
-  notification_filters, event_scanner, database_watch;
+  notification_filters, event_scanner, database_watch, mail_cache, pebble_protocol;
 
 type
-  TBytes = array of Byte;
+  TBytes = TPebbleBytes;
   TUUID  = array[0..15] of Byte;
 
 var
@@ -74,6 +74,10 @@ var
   g_filters: TNotificationFilters;
   g_scanner: TEventScanner;
   g_database_watch: TDatabaseWatch;
+  g_email_enabled: Boolean = True;
+  g_mail_fallback_seconds: Integer = 300;
+  g_mail_cache_root: string;
+  g_mail_cache: TMailCache;
 
 procedure ShowHelp;
 begin
@@ -99,7 +103,8 @@ begin
   WriteLn;
   WriteLn('With no options, connects to the Pebble configured in maebble.cfg,');
   WriteLn('sends the VERSION/TIME handshake, then watches the event database');
-  WriteLn('for incoming messages and relays them until killed (Ctrl+C).');
+  WriteLn('for incoming messages and the Modest IMAP inbox cache for email.');
+  WriteLn('Notifications are relayed until killed (Ctrl+C).');
 end;
 
 
@@ -193,11 +198,20 @@ begin
     Result := '';
 end;
 
+function DefaultMailCacheRoot: string;
+var Home: string;
+begin
+  Home := GetEnvironmentVariable('HOME');
+  if Home = '' then Home := '/home/user';
+  Result := Home + '/.modest/cache/mail/imap';
+end;
+
 procedure Configure;
 var
   cfg: TIniFile;
   cfgPath: string;
 begin
+  g_mail_cache_root := DefaultMailCacheRoot;
   cfgPath := FindConfigFile;
   if cfgPath = '' then
   begin
@@ -219,6 +233,11 @@ begin
     if (g_connect_sleep < 1) or (g_connect_sleep > 86400) then
       raise Exception.Create('btservice.connect_sleep must be 1..86400');
     g_filters.Load(cfg);
+    g_email_enabled := cfg.ReadBool('email', 'enabled', True);
+    g_mail_cache_root := cfg.ReadString('email', 'cache_directory', DefaultMailCacheRoot);
+    g_mail_fallback_seconds := cfg.ReadInteger('email', 'fallback_seconds', 300);
+    if (g_mail_fallback_seconds < 1) or (g_mail_fallback_seconds > 86400) then
+      raise Exception.Create('email.fallback_seconds must be 1..86400');
   finally
     cfg.Free;
   end;
@@ -230,14 +249,34 @@ begin
     WriteLn('connect_sleep: ', g_connect_sleep);
     WriteLn('time_sleep:    ', g_time_sleep);
     WriteLn('use_oscp:      ', g_use_oscp);
+    WriteLn('email:         ', g_email_enabled);
+    if g_email_enabled then WriteLn('email cache:   ', g_mail_cache_root);
   end;
 end;
 
 { ================= Bluetooth transport ================= }
 
+function SetSocketTimeout(s, Option, Seconds: cint): Boolean;
+var
+  Timeout: TTimeVal;
+  ErrorCode: cint;
+begin
+  FillChar(Timeout, SizeOf(Timeout), 0);
+  Timeout.tv_sec := Seconds;
+  Result := fpSetSockOpt(s, SOL_SOCKET, Option, @Timeout, SizeOf(Timeout)) = 0;
+  if not Result then
+  begin
+    ErrorCode := fpGetErrno;
+    if g_print_maemo then
+      WriteLn('Setting Bluetooth socket timeout failed: ', ErrorCode,
+        ' (', SysErrorMessage(ErrorCode), ')');
+  end;
+end;
+
 function BtConnect(const addr: string): cint;
 var
   s: cint;
+  ErrorCode: cint;
   a: sockaddr_rc;
 begin
   if addr = '' then
@@ -264,38 +303,66 @@ begin
 
   if fpConnect(s, @a, SizeOf(a)) < 0 then
   begin
-    if g_print_maemo then WriteLn('fpConnect failed: ', fpgeterrno);
+    ErrorCode := fpGetErrno;
+    if g_print_maemo then
+      WriteLn('fpConnect failed: ', ErrorCode, ' (', SysErrorMessage(ErrorCode), ')');
     CloseSocket(s);
     Exit(-1);
   end;
 
+  // Bound blocked writes so a stalled peer cannot hold the notification lock forever.
+  if not SetSocketTimeout(s, SO_SNDTIMEO, 15) then
+  begin
+    CloseSocket(s);
+    Exit(-1);
+  end;
   Result := s;
 end;
 
 function BtSendAll(s: cint; const buf: TBytes): Boolean;
-var sent, n: Integer;
+var sent, n, ErrorCode: Integer;
 begin
   sent := 0;
   while sent < Length(buf) do
   begin
     n := fpSend(s, @buf[sent], Length(buf) - sent, MSG_NOSIGNAL);
-    if (n < 0) and (fpGetErrno = ESysEINTR) then Continue;
-    if n <= 0 then Exit(False);
+    if n <= 0 then
+    begin
+      ErrorCode := fpGetErrno;
+      if (n < 0) and (ErrorCode = ESysEINTR) then Continue;
+      if g_print_maemo then
+      begin
+        if n = 0 then WriteLn('Bluetooth send made no progress')
+        else WriteLn('Bluetooth send failed: ', ErrorCode, ' (', SysErrorMessage(ErrorCode), ')');
+        WriteLn('Bluetooth write stopped after ', sent, '/', Length(buf), ' bytes');
+      end;
+      Exit(False);
+    end;
     Inc(sent, n);
   end;
   Result := True;
 end;
 
 function BtRecvExact(s: cint; var buf: TBytes; count: Integer): Boolean;
-var got, n: Integer;
+var got, n, ErrorCode: Integer;
 begin
   SetLength(buf, count);
   got := 0;
   while got < count do
   begin
     n := fpRecv(s, @buf[got], count - got, 0);
-    if (n < 0) and (fpGetErrno = ESysEINTR) then Continue;
-    if n <= 0 then Exit(False);
+    if n <= 0 then
+    begin
+      ErrorCode := fpGetErrno;
+      if (n < 0) and (ErrorCode = ESysEINTR) then Continue;
+      if g_print_maemo then
+      begin
+        if n = 0 then WriteLn('Bluetooth receive: end of stream (connection closed)')
+        else WriteLn('Bluetooth receive failed: ', ErrorCode, ' (', SysErrorMessage(ErrorCode), ')');
+        WriteLn('Bluetooth read stopped after ', got, '/', count, ' bytes');
+      end;
+      Exit(False);
+    end;
     Inc(got, n);
   end;
   Result := True;
@@ -575,6 +642,62 @@ begin
   end;
 end;
 
+function HandleMailEvent(const Event: TMailEvent): Boolean;
+var
+  RuleIndex: Integer;
+  Channel: string;
+begin
+  Result := False;
+  Channel := 'email:' + Event.Account;
+  g_sock_lock.Enter;
+  try
+    if not g_ready then Exit;
+    // Cached email notifications show headers only, so text filters match the subject.
+    if not g_filters.ShouldShow(Event.Sender, Channel, Event.Subject, RuleIndex) then
+    begin
+      if g_print_maemo then WriteLn('Filtered email UID ', Event.UID, ' [', Event.Account, ']');
+      Exit(True);
+    end;
+    NotificationEmail(Event.DisplaySender, Event.Subject, '');
+    g_filters.MarkShown(RuleIndex, Event.Sender, Channel);
+    if g_print_maemo then
+      WriteLn('Email from ', Event.DisplaySender, ' [', Event.Account, ']: ', Event.Subject);
+    Result := True;
+  finally
+    g_sock_lock.Leave;
+  end;
+end;
+
+function MailThreadFunc(Param: Pointer): PtrInt;
+var
+  Ready: Boolean;
+  Count: Integer;
+begin
+  Result := 0;
+  if g_print_maemo then
+    WriteLn('Email scanner: inotify watch=', g_mail_cache.Watch.Active,
+      ', inboxes=', g_mail_cache.MailboxCount,
+      ', fallback=', g_mail_fallback_seconds, 's');
+  while True do
+  begin
+    g_sock_lock.Enter;
+    try
+      Ready := g_ready;
+    finally
+      g_sock_lock.Leave;
+    end;
+    Count := 0;
+    if Ready then
+    try
+      Count := g_mail_cache.Scan(@HandleMailEvent);
+    except
+      on E: Exception do WriteLn('email scan error: ', E.Message);
+    end;
+    if Count = MAIL_BATCH_SIZE then Continue;
+    g_mail_cache.Wait(g_mail_fallback_seconds * 1000);
+  end;
+end;
+
 { ================= notification v3 ================= }
 
 procedure ZeroUUID(out U: TUUID);
@@ -828,16 +951,25 @@ end;
 { ================= endpoint handlers ================= }
 
 function HandlePing(endpoint: Word; const data: TBytes; s: cint): TBytes;
-var cookie: Cardinal;
+var
+  cookie: Cardinal;
+  reply: TBytes;
 begin
-  if Length(data) >= 5 then
-    cookie := UnpackU32BE(data, 1)
-  else
-    cookie := 0;
-  if g_print_maemo then
-    WriteLn(Format('PING received, cookie=$%.8x', [cookie]));
-  //BtSendAll(s, BuildMessage(ENDPOINT_PING, data));
   Result := data;
+  if Length(data) < 5 then
+  begin
+    if g_print_maemo then WriteLn('Ignoring short PING packet: ', Length(data), ' bytes');
+    Exit;
+  end;
+  cookie := UnpackU32BE(data, 1);
+  if g_print_maemo then
+    WriteLn(Format('PING endpoint: command=%d, cookie=$%.8x', [data[0], cookie]));
+  reply := PongForPing(data);
+  if reply <> nil then
+  begin
+    Send(ENDPOINT_PING, reply);
+    if g_print_maemo then WriteLn('PONG sent');
+  end;
 end;
 
 function HandlePhoneVersion(endpoint: Word; const data: TBytes; s: cint): TBytes;
@@ -989,11 +1121,23 @@ end;
 function GetVersions(s: cint): Boolean;
 var msg, resp: TBytes;
 begin
-  msg := BuildMessage(ENDPOINT_VERSION, Bytes([0]));
-  if not BtSendAll(s, msg) then Exit(False);
-  if not SyncEndpoint(s, ENDPOINT_VERSION, resp) then Exit(False);
-  if resp <> nil then HandleVersion(ENDPOINT_VERSION, resp, s);
-  Result := True;
+  Result := False;
+  if not SetSocketTimeout(s, SO_RCVTIMEO, 15) then Exit;
+  try
+    msg := BuildMessage(ENDPOINT_VERSION, Bytes([0]));
+    if not BtSendAll(s, msg) then Exit;
+    if not SyncEndpoint(s, ENDPOINT_VERSION, resp) then Exit;
+    if (Length(resp) < 95) or (resp[0] <> 1) then
+    begin
+      if g_print_maemo then WriteLn('Invalid VERSION response: ', Length(resp), ' bytes');
+      Exit;
+    end;
+    HandleVersion(ENDPOINT_VERSION, resp, s);
+    Result := True;
+  finally
+    // Idle established connections must keep sleeping without a receive timeout.
+    if not SetSocketTimeout(s, SO_RCVTIMEO, 0) then Result := False;
+  end;
 end;
 
 function SetTime(s: cint; unixtime: Cardinal): Boolean;
@@ -1044,11 +1188,15 @@ begin
       g_sock_lock.Leave;
     end;
     g_database_watch.Wake;
+    if g_mail_cache <> nil then g_mail_cache.Wake;
 
     while True do
     begin
       if not ProcessOneMessage(g_sock) then
+      begin
+        WriteLn('Watch connection lost; retrying in ', g_connect_sleep, ' seconds');
         Break;
+      end;
     end;
     Result := True;
   finally
@@ -1057,6 +1205,7 @@ begin
       g_ready := False;
       if g_sock >= 0 then
       begin
+        fpShutdown(g_sock, 2);
         CloseSocket(g_sock);
         g_sock := -1;
       end;
@@ -1068,7 +1217,7 @@ end;
 
 procedure Main;
 var
-  scannerTid: TThreadID;
+  scannerTid, mailTid: TThreadID;
   i: Integer;
 begin
   Randomize;
@@ -1106,8 +1255,8 @@ begin
     end;
     try
       //Ping(g_sock);
-      GetVersions(g_sock);   // needed so g_watch_version is set
-      SetTime(g_sock, GetLocalTimeUnix);
+      if not GetVersions(g_sock) then raise Exception.Create('GetVersions failed');
+      if not SetTime(g_sock, GetLocalTimeUnix) then raise Exception.Create('SetTime failed');
       if ParamCount >= 3 then
         NotificationSMS(ParamStr(2), ParamStr(3))
       else
@@ -1115,6 +1264,7 @@ begin
       WriteLn('Notification sent.');
       Sleep(2000);           // let the BT stack flush
     finally
+      fpShutdown(g_sock, 2);
       CloseSocket(g_sock);
       g_sock := -1;
     end;
@@ -1130,8 +1280,8 @@ begin
       Halt(1);
     end;
     try
-      GetVersions(g_sock);
-      SetTime(g_sock, GetLocalTimeUnix);
+      if not GetVersions(g_sock) then raise Exception.Create('GetVersions failed');
+      if not SetTime(g_sock, GetLocalTimeUnix) then raise Exception.Create('SetTime failed');
       if ParamCount >= 4 then
         NotificationEmail(ParamStr(2), ParamStr(3), ParamStr(4))
       else
@@ -1139,6 +1289,7 @@ begin
       WriteLn('Email notification sent.');
       Sleep(2000);
     finally
+      fpShutdown(g_sock, 2);
       CloseSocket(g_sock);
       g_sock := -1;
     end;
@@ -1154,9 +1305,18 @@ begin
   end;
   if g_print_maemo then WriteLn('Initial watermark: ', g_scanner.Watermark);
 
+  if g_email_enabled then
+  begin
+    g_mail_cache := TMailCache.Create(g_mail_cache_root);
+    g_mail_cache.Initialize;
+  end;
+
   { Daemon mode }
   if BeginThread(@ScannerThreadFunc, nil, scannerTid) = 0 then
     raise Exception.Create('Could not start scanner thread');
+  if g_email_enabled then
+    if BeginThread(@MailThreadFunc, nil, mailTid) = 0 then
+      raise Exception.Create('Could not start email scanner thread');
 
   while True do
   begin
