@@ -8,7 +8,7 @@ PARAMS   = $(PROJECT) -FU$(UNITS) -MObjFPC -Sc -O1 -gl -vewnhi -l \
 
 all: $(OUTFILE)
 
-$(OUTFILE): $(PROJECT) maebble.pas bluetoothlaz/source/package/bluetooth.pas
+$(OUTFILE): $(PROJECT) maebble.pas notification_filters.pas event_scanner.pas database_watch.pas bluetoothlaz/source/package/bluetooth.pas
 	@mkdir -p $(UNITS)
 	$(FPC) $(PARAMS)
 
@@ -19,5 +19,7 @@ clean:
 test: $(OUTFILE)
 	./$(OUTFILE) --test-sms "Alice" "Hello from the test mode"
 
-.PHONY: all clean test
+check:
+	FPC="$(FPC)" python3 tests/run.py
 
+.PHONY: all clean test check

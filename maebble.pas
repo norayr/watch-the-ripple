@@ -52,7 +52,8 @@ function  LookupContact(const number: string): string;
 implementation
 
 uses
-  Sockets, Unix, BaseUnix, IniFiles, DateUtils, Types, SyncObjs, Process;
+  Sockets, Unix, BaseUnix, IniFiles, DateUtils, Types, SyncObjs, Process,
+  notification_filters, event_scanner, database_watch;
 
 type
   TBytes = array of Byte;
@@ -68,8 +69,11 @@ var
   g_print_maemo:   Boolean = False;
   g_sock:          cint    = -1;
   g_sock_lock:     TCriticalSection = nil;
-  g_initial_watermark: Integer = 0;
-  lastNotifiedId: Integer;
+  g_ready: Boolean = False;
+  g_scan_fallback_seconds: Integer = 30;
+  g_filters: TNotificationFilters;
+  g_scanner: TEventScanner;
+  g_database_watch: TDatabaseWatch;
 
 procedure ShowHelp;
 begin
@@ -94,8 +98,8 @@ begin
   WriteLn('  (fallback: ./maebble.cfg in the current directory)');
   WriteLn;
   WriteLn('With no options, connects to the Pebble configured in maebble.cfg,');
-  WriteLn('sends VERSION/TIME/PING handshake, then listens on D-Bus for');
-  WriteLn('incoming SMS and relays them to the watch until killed (Ctrl+C).');
+  WriteLn('sends the VERSION/TIME handshake, then watches the event database');
+  WriteLn('for incoming messages and relays them until killed (Ctrl+C).');
 end;
 
 
@@ -209,6 +213,12 @@ begin
     g_time_sleep    := cfg.ReadInteger('btservice','time_sleep',    4);
     g_use_oscp      := LowerCase(Trim(
                          cfg.ReadString('media','use_oscp','true'))) = 'true';
+    g_scan_fallback_seconds := cfg.ReadInteger('notifications', 'fallback_seconds', 30);
+    if (g_scan_fallback_seconds < 1) or (g_scan_fallback_seconds > 86400) then
+      raise Exception.Create('notifications.fallback_seconds must be 1..86400');
+    if (g_connect_sleep < 1) or (g_connect_sleep > 86400) then
+      raise Exception.Create('btservice.connect_sleep must be 1..86400');
+    g_filters.Load(cfg);
   finally
     cfg.Free;
   end;
@@ -268,7 +278,8 @@ begin
   sent := 0;
   while sent < Length(buf) do
   begin
-    n := fpSend(s, @buf[sent], Length(buf) - sent, 0);
+    n := fpSend(s, @buf[sent], Length(buf) - sent, MSG_NOSIGNAL);
+    if (n < 0) and (fpGetErrno = ESysEINTR) then Continue;
     if n <= 0 then Exit(False);
     Inc(sent, n);
   end;
@@ -283,6 +294,7 @@ begin
   while got < count do
   begin
     n := fpRecv(s, @buf[got], count - got, 0);
+    if (n < 0) and (fpGetErrno = ESysEINTR) then Continue;
     if n <= 0 then Exit(False);
     Inc(got, n);
   end;
@@ -295,9 +307,14 @@ var
 begin
   g_sock_lock.Enter;
   try
-    if g_sock < 0 then Exit;
+    if g_sock < 0 then raise Exception.Create('Watch is disconnected');
     msg := BuildMessage(endpoint, payload);
-    BtSendAll(g_sock, msg);
+    if not BtSendAll(g_sock, msg) then
+    begin
+      g_ready := False;
+      fpShutdown(g_sock, 2);
+      raise Exception.Create('Bluetooth send failed');
+    end;
   finally
     g_sock_lock.Leave;
   end;
@@ -356,20 +373,6 @@ begin
   else
     Result := CONTACTS_DB;
 end;
-
-function QueryMaxEventId: Integer;
-var
-  outStr: string;
-begin
-  Result := 0;
-  if RunCapture('sqlite3',
-       [ContactsDbFile, 'SELECT MAX(id) FROM Events'], outStr) then
-  begin
-    outStr := Trim(StringReplace(outStr, #10, '', [rfReplaceAll]));
-    Result := StrToIntDef(outStr, 0);
-  end;
-end;
-
 
 { ================= contact lookup (sqlite3 CLI) ================= }
 
@@ -513,86 +516,62 @@ begin
   Result := True;
 end;
 
-{ ================= D-Bus SMS listener ================= }
+{ ================= event database listener ================= }
 
-function ScanForNewMessages: Integer;
+function HandleMessageEvent(const Event: TMessageEvent): Boolean;
 var
-  outStr: string;
-  lines: TStringList;
-  parts: TStringArray;
-  eventId: Integer;
-  sender, channel, body: AnsiString;
-  outgoing: Boolean;
-  contact: AnsiString;
-  i: Integer;
-  watermark: Integer;
+  RuleIndex: Integer;
 begin
-  Result := 0;
-  watermark := LastNotifiedId;
-  if watermark = 0 then
-    watermark := g_initial_watermark;
-  if watermark = 0 then
-    Exit;
-  if not RunCapture('sqlite3',
-       ['-separator', #31, ContactsDbFile,
-        Format('SELECT id, COALESCE(remote_uid,''''), COALESCE(channel,''''), ' +
-               'COALESCE(free_text,''''), COALESCE(outgoing,0) ' +
-               'FROM Events WHERE id > %d ORDER BY id ASC LIMIT 20',
-               [watermark])], outStr) then
-    Exit;
-
-  if outStr = '' then Exit;
-
-  lines := TStringList.Create;
+  Result := False;
+  g_sock_lock.Enter;
   try
-    lines.Text := outStr;
-    for i := 0 to lines.Count - 1 do
+    if not g_ready then Exit;
+    if not g_filters.ShouldShow(Event.Sender, Event.Channel, Event.Body, RuleIndex) then
     begin
-      if lines[i] = '' then Continue;
-      parts := lines[i].Split([#31]);
-      if Length(parts) < 5 then Continue;
-
-      eventId  := StrToIntDef(parts[0], 0);
-      if eventId <= lastNotifiedId then Continue;
-
-      sender   := parts[1];
-      channel  := parts[2];
-      body     := parts[3];
-      outgoing := (parts[4] = '1') or (LowerCase(parts[4]) = 'true');
-
-      // Advance watermark unconditionally — we've seen this event.
-      lastNotifiedId := eventId;
-
-      if outgoing then Continue;
-      if body = '' then Continue;
-
-      contact := LookupContact(sender);
-      WriteLn('Message from ', contact, ' [', channel, ']: ', body);
-      try
-        NotificationSMS(contact, body);
-        Inc(Result);
-      except
-        on E: Exception do WriteLn('notify error: ', E.Message);
-      end;
+      if g_print_maemo then WriteLn('Filtered event ', Event.Id, ' from ', Event.Sender);
+      Exit(True);
     end;
+    NotificationSMS(Event.Contact, Event.Body);
+    g_filters.MarkShown(RuleIndex, Event.Sender, Event.Channel);
+    if g_print_maemo then
+      WriteLn('Message from ', Event.Contact, ' [', Event.Channel, ']: ', Event.Body);
+    Result := True;
   finally
-    lines.Free;
+    g_sock_lock.Leave;
   end;
 end;
 
-function DbusThreadFunc(Param: Pointer): PtrInt;
+function ScannerThreadFunc(Param: Pointer): PtrInt;
+var
+  Ready: Boolean;
+  Count: Integer;
 begin
   Result := 0;
   if g_print_maemo then
-    WriteLn('Scanner thread started (period 300ms)');
+    WriteLn('Scanner: inotify watch=', g_database_watch.Active,
+      ', fallback=', g_scan_fallback_seconds, 's');
   while True do
   begin
-    Sleep(300);
+    g_sock_lock.Enter;
     try
-      ScanForNewMessages;
+      Ready := g_ready;
+    finally
+      g_sock_lock.Leave;
+    end;
+    if not Ready then
+    begin
+      // Connection completion wakes this without polling while offline.
+      g_database_watch.Wait(g_scan_fallback_seconds * 1000);
+      Continue;
+    end;
+    Count := 0;
+    try
+      Count := g_scanner.Scan(@HandleMessageEvent);
     except
       on E: Exception do WriteLn('scan error: ', E.Message);
     end;
+    if Count = EVENT_BATCH_SIZE then Continue;
+    g_database_watch.Wait(g_scan_fallback_seconds * 1000);
   end;
 end;
 
@@ -874,7 +853,7 @@ begin
   msg := Cat(msg, Bytes([$FF, $FF, $FF, $FF]));  // -1 as signed int32, big-endian
   msg := Cat(msg, PackU32BE(session));
   msg := Cat(msg, PackU32BE(remote));
-  BtSendAll(s, BuildMessage(ENDPOINT_PHONE_VERSION, msg));
+  Send(ENDPOINT_PHONE_VERSION, msg);
   Result := data;
 end;
 
@@ -946,15 +925,12 @@ begin
   for tries := 1 to 10 do
   begin
     if not BtRecvExact(s, hdr, 4) then
-    begin
-      Sleep(1000);
-      Continue;
-    end;
+      Exit(False);
     size := UnpackU16BE(hdr, 0);
     ep   := UnpackU16BE(hdr, 2);
     if size > 0 then
     begin
-      if not BtRecvExact(s, resp, size) then Continue;
+      if not BtRecvExact(s, resp, size) then Exit(False);
     end
     else
       resp := nil;
@@ -1038,7 +1014,6 @@ end;
 
 function RunOnce: Boolean;
 begin
-  Configure;
   g_sock_lock.Enter;
   try
     g_sock := BtConnect(g_bt_address);
@@ -1060,11 +1035,15 @@ begin
     end;
     WriteLn('Connected, watch version: ', g_watch_version);
 
-    SetTime(g_sock, GetLocalTimeUnix);
+    if not SetTime(g_sock, GetLocalTimeUnix) then Exit(False);
 
-    // SMOKE TEST — comment this out once you've seen it on the watch
-    // NotificationSMS('Pascal', 'Hello from maebble.pas');
-
+    g_sock_lock.Enter;
+    try
+      g_ready := True;
+    finally
+      g_sock_lock.Leave;
+    end;
+    g_database_watch.Wake;
 
     while True do
     begin
@@ -1075,6 +1054,7 @@ begin
   finally
     g_sock_lock.Enter;
     try
+      g_ready := False;
       if g_sock >= 0 then
       begin
         CloseSocket(g_sock);
@@ -1088,7 +1068,7 @@ end;
 
 procedure Main;
 var
-  dbusTid: TThreadID;
+  scannerTid: TThreadID;
   i: Integer;
 begin
   Randomize;
@@ -1114,9 +1094,10 @@ begin
   // One-shot notification test mode:
   //   ./maebbled --test-sms "sender" "body"
   //   ./maebbled --test-email "sender" "subject" "body"
+  Configure;
+
   if (ParamCount >= 2) and (ParamStr(1) = '--test-sms') then
   begin
-    Configure;
     g_sock := BtConnect(g_bt_address);
     if g_sock < 0 then
     begin
@@ -1142,7 +1123,6 @@ begin
 
  if (ParamCount >= 2) and (ParamStr(1) = '--test-email') then
   begin
-    Configure;
     g_sock := BtConnect(g_bt_address);
     if g_sock < 0 then
     begin
@@ -1152,7 +1132,7 @@ begin
     try
       GetVersions(g_sock);
       SetTime(g_sock, GetLocalTimeUnix);
-      if ParamCount >= 5 then
+      if ParamCount >= 4 then
         NotificationEmail(ParamStr(2), ParamStr(3), ParamStr(4))
       else
         NotificationEmail('Pascal', 'Test subject', 'Test body');
@@ -1165,32 +1145,37 @@ begin
     Halt(0);
   end;
 
-  g_initial_watermark := QueryMaxEventId;
-  if g_print_maemo then
-    WriteLn('Initial watermark: ', g_initial_watermark);
-
-  lastNotifiedId := g_initial_watermark;
+  g_database_watch := TDatabaseWatch.Create(ContactsDbFile);
+  g_scanner := TEventScanner.Create(ContactsDbFile);
+  try
+    g_scanner.Initialize;
+  except
+    on E: Exception do WriteLn('Initial database scan failed: ', E.Message);
+  end;
+  if g_print_maemo then WriteLn('Initial watermark: ', g_scanner.Watermark);
 
   { Daemon mode }
-  BeginThread(@DbusThreadFunc, nil, dbusTid);
+  if BeginThread(@ScannerThreadFunc, nil, scannerTid) = 0 then
+    raise Exception.Create('Could not start scanner thread');
 
   while True do
   begin
     try
-      if not RunOnce then
-        Sleep(g_connect_sleep * 1000);
+      RunOnce;
     except
       on E: Exception do
       begin
         WriteLn('Exception: ', E.Message);
-        Sleep(g_connect_sleep * 1000);
       end;
     end;
+    Sleep(g_connect_sleep * 1000);
   end;
 end;
 
 initialization
   g_sock_lock := TCriticalSection.Create;
+  g_filters := TNotificationFilters.Create;
 finalization
+  g_filters.Free;
   g_sock_lock.Free;
 end.
