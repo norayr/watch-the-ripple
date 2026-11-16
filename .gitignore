@@ -1,0 +1,12 @@
+/wtrd
+/build/
+/units/
+/maebbled
+/link*.res
+/bluetoothlaz/
+/debian/.debhelper/
+/debian/ripple/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.debhelper
+/debian/*.substvars

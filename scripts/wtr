@@ -1,0 +1,165 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    cat <<'EOF'
+Usage: wtr COMMAND
+  init        Create a private configuration file, preserving legacy settings
+  start       Start wtrd for the current user
+  stop        Stop this user's managed wtrd
+  restart     Stop and start wtrd
+  status      Show whether the managed daemon is running
+  enable      Enable startup at the next graphical login
+  disable     Disable startup at graphical login
+  autostart   Start only when enabled
+  log         Show the last 50 lines of the daemon log
+EOF
+}
+
+case ${1:-help} in
+    help|-h|--help) usage; exit 0 ;;
+    init|start|stop|restart|status|enable|disable|autostart|log) command=$1 ;;
+    *) usage >&2; exit 2 ;;
+esac
+[ "$#" -eq 1 ] || { usage >&2; exit 2; }
+
+if [ "$(id -u)" -eq 0 ]; then
+    echo 'Run wtr as the desktop user, without sudo.' >&2
+    exit 1
+fi
+: "${HOME:?HOME is not set}"
+umask 077
+self=$(readlink -f "$0")
+bindir=$(dirname "$self")
+prefix=$(dirname "$bindir")
+daemon=$bindir/wtrd
+template=$prefix/share/ripple/wtr.conf
+config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/wtr
+config=$config_dir/wtr.conf
+legacy=$HOME/.config/maebble/maebble.cfg
+enabled=$config_dir/autostart
+state_dir=${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/ripple
+log_dir=${XDG_CACHE_HOME:-$HOME/.cache}/ripple
+pidfile=$state_dir/wtrd.pid
+logfile=$log_dir/wtrd.log
+
+if [ "$command" = autostart ] && [ ! -f "$enabled" ]; then
+    exit 0
+fi
+
+if [ "$command" = init ]; then
+    mkdir -p "$config_dir"
+    if [ ! -e "$config" ]; then
+        if [ -f "$legacy" ]; then
+            install -m 0600 "$legacy" "$config"
+        else
+            install -m 0600 "$template" "$config"
+        fi
+    fi
+    printf '%s\n' "$config"
+    exit 0
+fi
+
+if [ "$command" = disable ]; then
+    rm -f "$enabled"
+    echo 'Ripple startup disabled; use wtr stop to stop the current daemon.'
+    exit 0
+fi
+
+valid_config() {
+    selected=$config
+    [ -f "$selected" ] || selected=$legacy
+    if [ ! -f "$selected" ]; then
+        echo 'Run wtr init, then set [btservice] address in the printed file.' >&2
+        return 1
+    fi
+    address=$(awk '
+        /^[[:space:]]*[#;]/ { next }
+        /^[[:space:]]*\[/ {
+            section=tolower($0); gsub(/[[:space:]]/, "", section); next
+        }
+        section == "[btservice]" && tolower($0) ~ /^[[:space:]]*address[[:space:]]*=/ {
+            sub(/^[^=]*=/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit
+        }
+    ' "$selected")
+    case $address in
+        [[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]) ;;
+        *) printf 'Set a valid Bluetooth address in %s\n' "$selected" >&2; return 1 ;;
+    esac
+}
+
+if [ "$command" = enable ]; then
+    valid_config
+    mkdir -p "$config_dir"
+    : > "$enabled"
+    echo 'Ripple startup enabled; use wtr start to start it now.'
+    exit 0
+fi
+
+if [ "$command" = log ]; then
+    [ -f "$logfile" ] || { echo 'No Ripple log yet.'; exit 0; }
+    tail -n 50 "$logfile"
+    exit 0
+fi
+
+mkdir -p "$state_dir" "$log_dir"
+exec 9>"$state_dir/control.lock"
+flock 9
+
+running() {
+    [ -f "$pidfile" ] || return 1
+    pid=$(cat "$pidfile")
+    case $pid in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 1 ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    executable=$(readlink "/proc/$pid/exe" 2>/dev/null) || return 1
+    case $executable in "$daemon"|"$daemon (deleted)") return 0 ;; *) return 1 ;; esac
+}
+
+stop() {
+    if running; then
+        kill -TERM "$pid"
+        for attempt in 1 2 3 4 5; do
+            running || break
+            sleep 1
+        done
+        if running; then
+            kill -KILL "$pid"
+        fi
+    fi
+    rm -f "$pidfile"
+    echo 'Ripple stopped.'
+}
+
+case $command in
+    status)
+        if running; then echo "Ripple is running (PID $pid)."; exit 0; fi
+        echo 'Ripple is not running.'
+        exit 3
+        ;;
+    stop) stop; exit 0 ;;
+    restart) stop ;;
+esac
+
+if running; then
+    echo "Ripple is already running (PID $pid)."
+    exit 0
+fi
+valid_config
+[ -x "$daemon" ] || { printf 'Daemon not found: %s\n' "$daemon" >&2; exit 1; }
+if [ -f "$logfile" ]; then mv -f "$logfile" "$logfile.previous"; fi
+# Close the control lock in the child so later stop/status commands can acquire it.
+(cd "$HOME"; exec nohup "$daemon" </dev/null >>"$logfile" 2>&1 9>&-) &
+pid=$!
+printf '%s\n' "$pid" > "$pidfile"
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if running; then
+        echo "Ripple started (PID $pid). Log: $logfile"
+        exit 0
+    fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+done
+rm -f "$pidfile"
+echo "Ripple failed to start; inspect $logfile" >&2
+exit 1

@@ -1212,6 +1212,8 @@ var
   scannerTid, mailTid: TThreadID;
   i: Integer;
 begin
+  // Keep session-log output visible when stdout is redirected to a file.
+  TextRec(Output).FlushFunc := TextRec(Output).InOutFunc;
   Randomize;
   g_print_maemo := False;
 
