@@ -1,0 +1,58 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Ripple
+Upstream-Contact: Norayr Chilingarian <norayr@arnet.am>
+Source: https://github.com/norayr/watch-the-ripple
+
+Files: *
+Copyright: 2026 Norayr Chilingarian <norayr@arnet.am>
+ 2016-2017 Par Olsson <proprog@gmail.com>
+ 2013 Liam McLoughlin
+ 2012 Thibault Cohen
+ 2012 Stefan Siegl <stesie@brokenpipe.de>
+License: GPL-3+
+Comment: Ripple is a Free Pascal reimplementation of Maebble. The original
+ Maebble credits Libpebble for the Pebble API and HeySms for SMS parsing.
+
+Files: third_party/bluetoothlaz/*
+Copyright: 2008 Mattias Gaertner <mattias@freepascal.org>
+License: LGPL-2+ with linking exception
+
+Files: third_party/bluetoothlaz/README.md
+Copyright: 2026 Norayr Chilingarian <norayr@arnet.am>
+License: GPL-3+
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the Free
+ Software Foundation, either version 3 of the License, or (at your option)
+ any later version.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ more details.
+ .
+ On Debian systems, the complete license is in
+ /usr/share/common-licenses/GPL-3. A copy is included in COPYING.
+
+License: LGPL-2+ with linking exception
+ This library is free software; you can redistribute it and/or modify it
+ under the terms of the GNU Library General Public License as published by
+ the Free Software Foundation; either version 2 of the License, or (at your
+ option) any later version.
+ .
+ As a special exception, the copyright holders of this library give you
+ permission to link this library with independent modules to produce an
+ executable, regardless of the license terms of these independent modules,
+ and to copy and distribute the resulting executable under terms of your
+ choice, provided that you also meet, for each linked independent module,
+ the terms and conditions of the license of that module. An independent
+ module is a module which is not derived from or based on this library.
+ If you modify this library, you may extend this exception to your version
+ of the library, but you are not obligated to do so. If you do not wish to
+ do so, delete this exception statement from your version.
+ .
+ On Debian systems, the complete library license is in
+ /usr/share/common-licenses/LGPL-2. The license and exception are included in
+ third_party/bluetoothlaz/COPYING.LGPL.txt and
+ third_party/bluetoothlaz/COPYING.modifiedLGPL.txt.

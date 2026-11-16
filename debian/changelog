@@ -1,0 +1,7 @@
+ripple (0.1.0-1+leste1) unstable; urgency=medium
+
+  * Packaging the user-session Pebble companion daemon for Maemo Leste.
+  * Providing opt-in graphical-session startup and user controls.
+  * Including BluetoothLaz sources for offline builds.
+
+ -- Norayr Chilingarian <norayr@arnet.am>  Tue, 17 Nov 2026 12:00:00 +0000

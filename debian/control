@@ -1,0 +1,86 @@
+Source: ripple
+Section: user/communication
+Priority: optional
+Maintainer: Norayr Chilingarian <norayr@arnet.am>
+Build-Depends:
+ debhelper-compat (= 13),
+ fp-compiler,
+ fp-units-base,
+ fp-units-db,
+ fp-units-fcl,
+ gcc,
+ libbluetooth-dev,
+ python3 <!nocheck>
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://github.com/norayr/watch-the-ripple
+Vcs-Git: https://git.maemo.org/leste-extras/ripple.git -b maemo/excalibur
+Vcs-Browser: https://git.maemo.org/leste-extras/ripple
+
+Package: ripple
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ awk,
+ bluez,
+ libsqlite3-0,
+ util-linux
+Recommends: dbus-bin
+Description: Pebble watch notifications for Maemo Leste
+ Ripple forwards incoming messages and Modest IMAP email notifications to
+ a paired Pebble watch over Bluetooth Classic RFCOMM. It supports configurable
+ notification filters and watch music controls through OSCP or MAFW.
+ .
+ The wtrd daemon runs as the desktop user. The wtr command provides manual
+ controls and opt-in startup at graphical login.
+XSBC-Bugtracker: mailto:norayr@arnet.am
+XSBC-Maemo-Display-Name: Ripple
+XB-Maemo-Icon-26:
+ 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
+ YII=
