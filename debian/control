@@ -8,7 +8,6 @@ Build-Depends:
  fp-units-base,
  fp-units-db,
  fp-units-fcl,
- gcc,
  libbluetooth-dev,
  python3 <!nocheck>
 Standards-Version: 4.6.2
@@ -22,10 +21,8 @@ Architecture: any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
- awk,
  bluez,
- libsqlite3-0,
- util-linux
+ libsqlite3-0
 Recommends: dbus-bin
 Description: Pebble watch notifications for Maemo Leste
  Ripple forwards incoming messages and Modest IMAP email notifications to

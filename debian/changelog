@@ -1,3 +1,9 @@
+ripple (0.1.0-2+leste1) unstable; urgency=medium
+
+  * Removing redundant dependencies on essential and build-essential packages.
+
+ -- Norayr Chilingarian <norayr@arnet.am>  Thu, 19 Nov 2026 04:33:39 +0400
+
 ripple (0.1.0-1+leste1) unstable; urgency=medium
 
   * Packaging the user-session Pebble companion daemon for Maemo Leste.
