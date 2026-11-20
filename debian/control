@@ -9,6 +9,7 @@ Build-Depends:
  fp-units-db,
  fp-units-fcl,
  fp-units-gtk2,
+ fp-units-misc,
  fp-units-net,
  lcl-gtk2,
  lcl-units,

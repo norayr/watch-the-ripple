@@ -1,3 +1,9 @@
+ripple (0.2.0-2+leste1) unstable; urgency=medium
+
+  * Adding fp-units-misc to provide FastHTMLParser for Lazarus clipboard support.
+
+ -- Norayr Chilingarian <norayr@arnet.am>  Sat, 21 Nov 2026 02:58:03 +0400
+
 ripple (0.2.0-1+leste1) unstable; urgency=medium
 
   * Adding the Lazarus/GTK2 watch-app manager with a Hildon launcher and icon.
