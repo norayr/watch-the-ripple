@@ -1,9 +1,11 @@
 [Desktop Entry]
+Encoding=UTF-8
 Name=Ripple
 Comment=Browse and manage Pebble watch apps
-Exec=ripple
+Exec=/usr/bin/ripple
 Icon=ripple
 Terminal=false
+X-MultipleArgs=false
 Type=Application
 Categories=Utility;
 X-Osso-Type=application/x-executable

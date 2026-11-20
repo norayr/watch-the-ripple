@@ -1,3 +1,17 @@
+ripple (0.2.0-1+leste1) unstable; urgency=medium
+
+  * Adding the Lazarus/GTK2 watch-app manager with a Hildon launcher and icon.
+  * Adding paged Rebble browsing, search, screenshots, and app details.
+  * Supporting watch-app installation and UUID-based removal, including apps
+    installed by another companion, with launch confirmation on firmware 3+.
+  * Preserving notification-daemon operation around watch access and retrying
+    temporarily busy Bluetooth connections.
+  * Verifying HTTPS downloads and validating PBW metadata, sizes, and CRCs.
+  * Converting screenshot pixels before GTK2 drawing to prevent monochrome
+    PNG crashes, and adding preview and installation regression tests.
+
+ -- Norayr Chilingarian <norayr@arnet.am>  Sat, 21 Nov 2026 02:41:30 +0400
+
 ripple (0.1.0-2+leste1) unstable; urgency=medium
 
   * Removing redundant dependencies on essential and build-essential packages.

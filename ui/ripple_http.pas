@@ -94,7 +94,7 @@ begin
   FClient.OnGetSocketHandler := @CreateSocket;
   FClient.OnRedirect := @Redirect;
   FClient.OnDataReceived := @Received;
-  FClient.AddHeader('User-Agent', 'Ripple/0.1');
+  FClient.AddHeader('User-Agent', 'Ripple/0.2.0');
 end;
 
 destructor TRippleHTTP.Destroy;

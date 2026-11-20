@@ -276,7 +276,9 @@ The Makefile detects Lazarus under `/usr/lib/lazarus/<version>` or
 Unit output is separated into `build/ui-units` and `build/units`.
 
 `make install DESTDIR=... PREFIX=/usr` stages the executables, example config,
-session hook, Hildon desktop entry, and icon. Debian packaging is under `debian/`;
+session hook, Hildon desktop entry, and icon. The launcher is installed at
+`/usr/share/applications/hildon/ripple.desktop`; its `Icon=ripple` entry resolves
+to `/usr/share/pixmaps/ripple.png`. Debian packaging is under `debian/`;
 a local binary-package build can use `dpkg-buildpackage -b -us -uc` once its build dependencies are
 installed. `DEB_BUILD_OPTIONS=nocheck` skips tests in Debian builds.
 
@@ -284,7 +286,7 @@ Development sources use the `main` branch. The Forgejo package workflow runs
 on pushes to `maemo/**` branches and pull requests targeting those branches,
 delegating to the shared Maemo Leste workflow. Packaging targets
 `maemo/excalibur`; `debian/gbp.conf` selects upstream tags matching the upstream
-version, such as `0.1.0`. The package version comes from `debian/changelog`;
+version, such as `0.2.0`. The package version comes from `debian/changelog`;
 changing the changelog is separate from triggering the workflow.
 
 ## License and credits
