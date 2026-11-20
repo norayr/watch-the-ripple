@@ -42,7 +42,7 @@ test: $(OUTFILE)
 check:
 	FPC="$(FPC)" python3 tests/run.py
 	FPC="$(FPC)" python3 tests/test_control.py
-	FPC="$(FPC)" python3 tests/test_ui.py
+	LAZARUS="$(LAZARUS)" FPC="$(FPC)" python3 tests/test_ui.py
 
 install: $(OUTFILE) ripple
 	install -D -m 0755 $(OUTFILE) $(DESTDIR)$(PREFIX)/bin/wtrd

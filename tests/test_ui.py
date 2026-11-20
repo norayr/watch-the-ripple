@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import uuid
 import zipfile
+import zlib
 
 
 def crc(data):
@@ -19,6 +20,18 @@ def crc(data):
         for _ in range(32):
             value = ((value << 1) ^ (0x04C11DB7 if value & 0x80000000 else 0)) & 0xFFFFFFFF
     return value
+
+
+def png(depth, kind, rows, palette=None, alpha=None):
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+
+    result = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 3, 2, depth, kind, 0, 0, 0))
+    if palette is not None:
+        result += chunk(b'PLTE', palette)
+    if alpha is not None:
+        result += chunk(b'tRNS', alpha)
+    return result + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')
 
 
 root = pathlib.Path(__file__).resolve().parent.parent
@@ -68,3 +81,27 @@ esac
     subprocess.run([f"{temp}/test_ui", temp], check=True, cwd=temp, env=env)
     subprocess.run([os.environ.get("FPC", "fpc"), "-B", "-gl", "-Cr", "-Co", "-Ci", "-Sa", "-gh", f"-Fu{root}/ui", f"-FU{temp}", f"-o{temp}/test_gallery", str(root / "tests/test_ripple_gallery.pas")], check=True, cwd=temp)
     subprocess.run([f"{temp}/test_gallery"], check=True, cwd=temp, env=env)
+    colors = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255])
+    fixtures = {
+        'mono': png(1, 0, bytes([0, 0x40, 0, 0xA0])),
+        'gray': png(4, 0, bytes([0, 0x08, 0xF0, 0, 0xF8, 0])),
+        'palette': png(2, 3, bytes([0, 0x18, 0, 0x90]), colors),
+        'palette-alpha': png(2, 3, bytes([0, 0x18, 0, 0x90]), colors, bytes([255, 128, 0])),
+        'rgb': png(8, 2, b'\0' + colors + b'\0' + colors),
+        'rgba': png(8, 6, bytes([0, 255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0]) * 2),
+    }
+    for name, data in fixtures.items():
+        pathlib.Path(temp, f'{name}.png').write_bytes(data)
+    pathlib.Path(temp, 'truncated.png').write_bytes(fixtures['mono'][:24])
+    fpc = os.environ.get('FPC', 'fpc')
+    arch = '-'.join(subprocess.check_output([fpc, flag], text=True).strip() for flag in ['-iTP', '-iTO'])
+    candidates = [pathlib.Path(os.environ['LAZARUS'])] if os.environ.get('LAZARUS') else (
+        sorted(pathlib.Path('/usr/lib/lazarus').glob('*')) + [pathlib.Path('/usr/share/lazarus')])
+    lazarus = next((path for path in candidates if (path / 'lcl/units' / arch / 'graphics.ppu').is_file()), None)
+    if lazarus is None:
+        raise RuntimeError('Lazarus LCL units not found; set LAZARUS to the Lazarus directory')
+    subprocess.run([fpc, '-B', '-gl', '-Cr', '-Co', '-Ci', '-Sa', '-gh', f'-Fu{root}/ui',
+                    f'-Fu{lazarus}/lcl/units/{arch}', f'-Fu{lazarus}/components/lazutils/lib/{arch}',
+                    f'-FU{temp}', f'-o{temp}/test_preview', str(root / 'tests/test_ripple_preview.pas')],
+                   check=True, cwd=temp)
+    subprocess.run([f'{temp}/test_preview', temp], check=True, cwd=temp, env=env)

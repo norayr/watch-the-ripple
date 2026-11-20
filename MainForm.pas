@@ -80,7 +80,7 @@ var FormMain: TFormMain;
 
 implementation
 
-uses Math, ripple_gallery;
+uses Math, ripple_gallery, ripple_preview;
 
 constructor TFormMain.Create(AOwner: TComponent);
 begin
@@ -659,7 +659,7 @@ begin
 end;
 
 procedure TFormMain.ReadPreviews;
-var Results: TPreviewResults; R: TPreviewResult; Stream: TMemoryStream;
+var Results: TPreviewResults; R: TPreviewResult;
   Image: TImage;
 begin
   Results := FPreview.TakeResults;
@@ -674,14 +674,9 @@ begin
     Image.Hint := R.ErrorText;
     if R.ErrorText = '' then
     begin
-      Stream := TMemoryStream.Create;
       try
-        try
-          if Length(R.Data) > 0 then Stream.WriteBuffer(R.Data[0], Length(R.Data));
-          Stream.Position := 0;
-          Image.Picture.LoadFromStream(Stream);
-        except on E: Exception do Image.Hint := 'Screenshot could not be decoded: ' + E.Message; end;
-      finally Stream.Free; end;
+        LoadPreviewPicture(Image.Picture, R.Data);
+      except on E: Exception do Image.Hint := 'Screenshot could not be decoded: ' + E.Message; end;
     end;
     Image.ShowHint := Image.Hint <> '';
     if Image = FPicture then
