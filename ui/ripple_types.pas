@@ -8,8 +8,12 @@ uses SysUtils;
 
 type
   TRippleBytes = array of Byte;
+  TRippleStrings = array of string;
   TRippleItem = record
     UUID, Title, Author, Description, DownloadURL, Version: string;
+    StoreID, StoreURL, Capabilities: string;
+    Screenshots: TRippleStrings;
+    Configurable, UsesLocation, Incompatible: Boolean;
     Bank, AppID, Flags: Cardinal;
   end;
   TRippleItems = array of TRippleItem;

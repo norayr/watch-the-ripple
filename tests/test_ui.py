@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise catalog, PBW, HTTPS URL checks, and watch protocol logic offline."""
+"""Exercise catalog, gallery, PBW, HTTPS checks, and watch protocol logic offline."""
 
 import json
 import os
@@ -66,3 +66,5 @@ esac
     env = os.environ.copy()
     env.update(HOME=f"{temp}/home", XDG_CONFIG_HOME=f"{temp}/config")
     subprocess.run([f"{temp}/test_ui", temp], check=True, cwd=temp, env=env)
+    subprocess.run([os.environ.get("FPC", "fpc"), "-B", "-gl", "-Cr", "-Co", "-Ci", "-Sa", "-gh", f"-Fu{root}/ui", f"-FU{temp}", f"-o{temp}/test_gallery", str(root / "tests/test_ripple_gallery.pas")], check=True, cwd=temp)
+    subprocess.run([f"{temp}/test_gallery"], check=True, cwd=temp, env=env)

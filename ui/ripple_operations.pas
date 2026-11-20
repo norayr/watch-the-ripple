@@ -7,7 +7,7 @@ interface
 uses Classes, SysUtils, SyncObjs, ripple_types;
 
 type
-  TRippleOperation = (roWatchfaces, roApps, roInstalled, roIdentify, roInstall, roRemove);
+  TRippleOperation = (roWatchfaces, roApps, roDetails, roInstalled, roIdentify, roInstall, roRemove);
   TRippleWorker = class(TThread)
   private
     FLock: TCriticalSection;
@@ -16,6 +16,8 @@ type
     FDone: Boolean;
     FText: string;
     FPercent: Integer;
+    FQuery: string;
+    FPage: Integer;
     procedure Progress(const Text: string; Percent: Integer);
     procedure Registered(const Item: TRippleItem);
     procedure RunOperation;
@@ -25,7 +27,9 @@ type
     Items: TRippleItems;
     Info: TWatchInfo;
     ErrorText, Note: string;
-    constructor Create(Operation: TRippleOperation; const Item: TRippleItem);
+    HasMore: Boolean;
+    constructor Create(Operation: TRippleOperation; const Item: TRippleItem;
+      const Query: string = ''; Page: Integer = 0);
     destructor Destroy; override;
     procedure Snapshot(out Done: Boolean; out Text: string; out Percent: Integer);
   end;
@@ -36,13 +40,16 @@ uses ripple_catalog, ripple_settings, ripple_http, ripple_pbw,
   ripple_watch_link, ripple_watch_apps, ripple_daemon, ripple_watch_access,
   ripple_temp, wtr_config;
 
-constructor TRippleWorker.Create(Operation: TRippleOperation; const Item: TRippleItem);
+constructor TRippleWorker.Create(Operation: TRippleOperation; const Item: TRippleItem;
+  const Query: string; Page: Integer);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
   FLock := TCriticalSection.Create;
   FOperation := Operation;
   FItem := Item;
+  FQuery := Query;
+  FPage := Page;
 end;
 
 destructor TRippleWorker.Destroy;
@@ -76,16 +83,35 @@ end;
 procedure TRippleWorker.RunOperation;
 var Address, LockPath: string; HTTP: TRippleHTTP; Download: TTempPBWFile;
   Link: TWatchLink; Daemon: TDaemonPause; PBW: TPBW; Banks: Cardinal;
-  Access: TWatchAccess; Connector: TWatchConnector;
+  Access: TWatchAccess; Connector: TWatchConnector; Details: TRippleItem;
 begin
   Address := '';
-  if FOperation in [roWatchfaces, roApps] then
+  if FOperation in [roWatchfaces, roApps, roDetails] then
   begin
     try Address := WatchAddress; except end;
     Info := LoadWatchInfo(Address);
-    Progress('Loading Rebble catalog', 0);
-    Items := FetchCatalog(FOperation = roWatchfaces, Info.Platform);
-    Note := 'Rebble featured catalog';
+    if FOperation = roDetails then
+    begin
+      Progress('Loading app details', 0);
+      Details := FetchAppDetails(FItem.StoreID, Info.Platform);
+      if (FItem.UUID <> '') and (Details.UUID <> FItem.UUID) then
+        raise Exception.Create('App details UUID does not match the catalog entry');
+      SetLength(Items, 1);
+      Items[0] := Details;
+      Note := 'Rebble app details';
+    end
+    else if FQuery <> '' then
+    begin
+      Progress('Searching Rebble catalog', 0);
+      Items := SearchCatalog(FQuery, FOperation = roWatchfaces, Info.Platform, FPage, HasMore);
+      Note := 'Rebble search: ' + FQuery;
+    end
+    else
+    begin
+      Progress('Loading Rebble catalog', 0);
+      Items := FetchCatalog(FOperation = roWatchfaces, Info.Platform);
+      Note := 'Rebble featured catalog';
+    end;
     if Info.Platform = '' then Note := Note + '; refresh Installed to detect watch hardware'
     else Note := Note + ' for ' + Info.Platform;
     Exit;
@@ -99,6 +125,7 @@ begin
     try
       if FOperation = roInstall then
       begin
+        if FItem.Incompatible then raise Exception.Create('This app does not support the detected watch');
         if FItem.DownloadURL = '' then raise Exception.Create('No PBW download is available');
         Progress('Downloading PBW', 0);
         Download := TTempPBWFile.Create;
