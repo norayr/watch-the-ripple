@@ -8,6 +8,10 @@ Build-Depends:
  fp-units-base,
  fp-units-db,
  fp-units-fcl,
+ fp-units-gtk2,
+ fp-units-net,
+ lcl-gtk2,
+ lcl-units,
  libbluetooth-dev,
  python3 <!nocheck>
 Standards-Version: 4.6.2
@@ -22,12 +26,16 @@ Depends:
  ${shlibs:Depends},
  ${misc:Depends},
  bluez,
- libsqlite3-0
+ libsqlite3-0,
+ ca-certificates,
+ libgnutls30
 Recommends: dbus-bin
-Description: Pebble watch notifications for Maemo Leste
+Description: Pebble watch companion for Maemo Leste
  Ripple forwards incoming messages and Modest IMAP email notifications to
  a paired Pebble watch over Bluetooth Classic RFCOMM. It supports configurable
  notification filters and watch music controls through OSCP or MAFW.
+ The Ripple application browses Rebble watchfaces and apps and provides
+ installation and removal controls over Bluetooth Classic RFCOMM.
  .
  The wtrd daemon runs as the desktop user. The wtr command provides manual
  controls and opt-in startup at graphical login.

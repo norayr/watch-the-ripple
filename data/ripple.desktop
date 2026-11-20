@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Ripple
+Comment=Browse and manage Pebble watch apps
+Exec=ripple
+Icon=ripple
+Terminal=false
+Type=Application
+Categories=Utility;
+X-Osso-Type=application/x-executable

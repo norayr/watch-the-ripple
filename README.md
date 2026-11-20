@@ -5,8 +5,9 @@ It forwards incoming rtcom messages and Modest IMAP email notifications over
 Bluetooth Classic RFCOMM, supports notification filters, and handles watch
 music controls through OSCP or MAFW.
 
-The package is named `ripple`. Its executables are `wtrd`, the daemon, and
-`wtr`, the user control command.
+The package is named `ripple`. Its executables are `ripple`, the graphical
+watch-app manager, `wtrd`, the notification daemon, and `wtr`, the user
+control command.
 
 ## Install and pair
 
@@ -145,6 +146,47 @@ Set `cooldown_seconds = 3600` for hourly reminders, or change the action to
 `ignore` for complete suppression. Use a distinctive warning fragment to avoid
 filtering ordinary conversations. `enabled = false` disables a rule.
 
+## Watchfaces and watch apps
+
+Open **Ripple** from the application menu, or run `ripple` as the desktop user.
+Controls are created at runtime with Lazarus LCL/GTK2, including Hildon portrait
+mode support.
+
+1. Set the Bluetooth address in `wtr.conf` using the setup instructions above.
+2. Select **Detect watch** to read its firmware and hardware platform.
+3. Select **Watchfaces** or **Watch apps**, then **Refresh**, to browse Rebble's
+   featured catalog. Hardware filtering uses the last detected platform; until
+   detection, the catalog is unfiltered.
+4. Select an item and choose **Install**. Ripple downloads the PBW, checks its
+   platform, sizes, and CRCs, and transfers it to the watch.
+5. Select **Installed / Ripple records** to view app entries and select **Remove**
+   to remove one from the watch.
+
+Network and watch operations run in a worker thread. Watch access temporarily
+stops the managed `wtrd` and restarts it afterwards only if it was running before.
+Notifications pause during that interval. Close any manually started companion
+before using watch controls, and avoid running `wtr start` during a transfer.
+Ripple confirms that the daemon has stopped before connecting and retries a
+busy RFCOMM channel briefly while the previous connection is being released.
+
+Firmware 2 supplies a live app-bank inventory. Firmware 3 and later use BlobDB
+app registration and AppFetch transfers, and cannot return that inventory.
+For these versions, the list explicitly shows saved Ripple registration records
+for the configured Bluetooth address. Apps installed by another companion are
+absent; records can become stale after a watch reset or removal elsewhere.
+A failed transfer can leave an app registration, which can be removed from the
+records view and then installed again.
+
+Ripple transfers app binaries, resources, and optional workers. Phone-side
+PebbleKit JavaScript and app configuration pages are unsupported, so apps needing
+them may have limited functionality. The daemon does not currently serve later
+AppFetch requests after firmware evicts an app binary from its cache; reinstall
+the app through Ripple if it needs fetching again. Watch operations require
+device testing for each supported model and firmware.
+
+UI settings are stored beside `wtr.conf` in `ripple.ini`; registration records
+are stored in `apps-<Bluetooth-address-without-colons>.ini`.
+
 ## Music controls and time
 
 `[media] use_oscp = True` uses OSCP's now-playing file and control FIFO.
@@ -153,9 +195,13 @@ interface. OSCP is a separate application and is not installed by Ripple.
 
 Watch time is set on connection. The legacy `process_sleep` and `time_sleep`
 settings are accepted but do not schedule periodic updates. Incoming-call
-notifications and full watch application management are not implemented.
+notifications are not implemented.
 
 ## Diagnostics
+
+`wtr status` reports whether the managed daemon process is running. Watch
+connection attempts and errors appear in `wtr log`. After a graphical watch
+operation, the daemon may already have reconnected, even if that operation failed.
 
 Stop the managed daemon before running a foreground session or a smoke test:
 
@@ -185,18 +231,27 @@ pairing information solely because a connection attempt timed out.
 ## Build and package
 
 On Debian/Devuan, build dependencies include `make`, `gcc`, `fp-compiler`,
-`fp-units-base`, `fp-units-fcl`, `fp-units-db`, and `libbluetooth-dev`.
-Tests additionally require Python 3. The required BluetoothLaz binding is
-included under `third_party/`; no Lazarus IDE or submodule download is required.
+`fp-units-base`, `fp-units-fcl`, `fp-units-db`, `fp-units-net`, `fp-units-gtk2`,
+`lcl-gtk2`, `lcl-units`, and `libbluetooth-dev`. The LCL packages provide the
+compiled GTK2 and LazUtils units. Tests additionally require Python 3. The
+required BluetoothLaz binding is included under `third_party/`.
+HTTPS uses FPC's `TFPHTTPClient` and `gnutlssockets`, with the system CA bundle
+and GnuTLS certificate/hostname verification; runtime packages include
+`ca-certificates` and `libgnutls30`.
 
 ```sh
 make
 make check
 ```
 
+`make ripple` builds just the graphical app; `make wtrd` builds just the daemon.
+The Makefile detects Lazarus under `/usr/lib/lazarus/<version>` or
+`/usr/share/lazarus`; use `make LAZARUS=/path/to/lazarus` for another location.
+Unit output is separated into `build/ui-units` and `build/units`.
+
 `make install DESTDIR=... PREFIX=/usr` stages the executables, example config,
-and session hook. Debian packaging is under `debian/`; a local binary-package
-build can use `dpkg-buildpackage -b -us -uc` once its build dependencies are
+session hook, Hildon desktop entry, and icon. Debian packaging is under `debian/`;
+a local binary-package build can use `dpkg-buildpackage -b -us -uc` once its build dependencies are
 installed. `DEB_BUILD_OPTIONS=nocheck` skips tests in Debian builds.
 
 The Forgejo workflow delegates to the shared Maemo Leste workflow. Packaging
