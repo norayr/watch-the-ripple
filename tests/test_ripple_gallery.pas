@@ -183,6 +183,45 @@ begin
   Check(not SafePreview(Bytes([$FF, $D8, $FF, $E0, 0, 0])), 'invalid JPEG segment length');
 end;
 
+procedure TestCatalogPages;
+var Items: TRippleItems; More, Failed: Boolean; URL: string;
+begin
+  URL := BrowseCatalogURL(True, 'aplite', 0);
+  Check(URL = 'https://appstore-api.rebble.io/api/v1/apps/collection/all/watchfaces?' +
+    'limit=9&offset=0&firmware_version=3&hardware=aplite&filter_hardware=true',
+    'all watchfaces collection and hardware filtering');
+  URL := BrowseCatalogURL(False, '', 3);
+  Check((Pos('/all/apps?', URL) > 0) and (Pos('offset=27', URL) > 0) and
+    (Pos('hardware=', URL) = 0), 'app collection page without known hardware');
+  URL := BrowseCatalogURL(True, 'aplite', 112);
+  Check(Pos('offset=1008', URL) > 0, 'collection browsing beyond one thousand results');
+  Failed := False;
+  try BrowseCatalogURL(True, '', -1); except Failed := True; end;
+  Check(Failed, 'negative browse page rejected');
+  Failed := False;
+  try BrowseCatalogURL(True, '', High(Integer)); except Failed := True; end;
+  Check(Failed, 'page offset overflow rejected');
+  Items := ParseCatalogPage('{"data":[{"title":"First"}],"offset":0,' +
+    '"links":{"nextPage":"https://example.org/next"}}', 'aplite', 0, More);
+  Check(More and (Length(Items) = 1) and (Items[0].Title = 'First'), 'collection next page');
+  Items := ParseCatalogPage('{"data":[{"title":"Last"}],"offset":9,' +
+    '"links":{"nextPage":null}}', 'aplite', 1, More);
+  Check(not More and (Length(Items) = 1), 'partial final collection page');
+  Items := ParseCatalogPage('{"data":[],"offset":18,"links":{}}', '', 2, More);
+  Check(not More and (Length(Items) = 0), 'empty final collection page');
+  Items := ParseCatalogPage('{"hits":[{"title":"Match"}],"page":0,"nbPages":2}', '', 0, More);
+  Check(More and (Length(Items) = 1), 'search next page');
+  Items := ParseCatalogPage('{"hits":[],"page":1,"nbPages":2}', '', 1, More);
+  Check(not More, 'search final page');
+  Failed := False;
+  try ParseCatalogPage('{"data":[],"offset":0}', '', 1, More); except Failed := True; end;
+  Check(Failed, 'repeated collection page rejected');
+  Failed := False;
+  try ParseCatalogPage('{"hits":[],"page":0,"nbPages":2}', '', 1, More);
+  except Failed := True; end;
+  Check(Failed, 'unexpected search page rejected');
+end;
+
 procedure TestWorker;
 var Worker: TFakePreview; URLs: TRippleStrings; Results: TPreviewResults;
   Generation, I, Before: Integer; Deadline: QWord;
@@ -267,6 +306,7 @@ begin
   TestLayout;
   TestCatalog;
   TestBounds;
+  TestCatalogPages;
   TestWorker;
   TestHTTPCancellation;
   WriteLn('Ripple gallery tests passed');

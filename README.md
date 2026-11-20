@@ -154,12 +154,15 @@ mode support.
 
 1. Set the Bluetooth address in `wtr.conf` using the setup instructions above.
 2. Select **Detect watch** to read its firmware and hardware platform.
-3. Select **Watchfaces** or **Watch apps** to browse Rebble's featured catalog.
+3. Select **Watchfaces** or **Watch apps** to browse Rebble's **All** collection.
    The **Gallery** shows nine screenshot cards per page, arranged in one to three
    columns according to the window width. Use **Previous** and **Next** to change
    pages, or **List** for a compact view. Enter a name and press **Search** to find
-   older entries; clear the search field and search again to return to featured
-   items. Featured hardware filtering uses the last detected platform; until
+   specific entries; clear the search field and search again to return to **All**.
+   Choose **Featured** in the collection selector for Rebble's smaller highlighted
+   selection. Changing the collection clears the search. **All** loads each page
+   from Rebble as needed.
+   Collection hardware filtering uses the last detected platform; until
    detection, the catalog is unfiltered. Search can show incompatible apps,
    which are marked and cannot be installed for the detected watch.
 4. Choose **Details** on a card or select a list entry to read its description,
@@ -174,7 +177,8 @@ mode support.
 To remove an app installed by another companion, find the same app in the catalog,
 open its details, and select **Remove**. Ripple sends its UUID to the watch after
 confirmation, even without a saved registration. Catalog details do not indicate
-whether an app is currently installed.
+whether an app is currently installed: they show installation status as unknown,
+and **Remove** means removal from the watch if present.
 
 Network and watch operations run in a worker thread. Watch access temporarily
 stops the managed `wtrd` and restarts it afterwards only if it was running before.

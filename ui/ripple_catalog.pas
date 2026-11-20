@@ -8,6 +8,11 @@ uses ripple_types;
 
 function ParseCatalog(const Text: string; const Platform: string = ''): TRippleItems;
 function FetchCatalog(Watchfaces: Boolean; const Platform: string): TRippleItems;
+function BrowseCatalogURL(Watchfaces: Boolean; const Platform: string; Page: Integer): string;
+function ParseCatalogPage(const Text, Platform: string; Page: Integer;
+  out HasMore: Boolean): TRippleItems;
+function BrowseCatalog(Watchfaces: Boolean; const Platform: string; Page: Integer;
+  out HasMore: Boolean): TRippleItems;
 function SearchCatalog(const Query: string; Watchfaces: Boolean; const Platform: string;
   Page: Integer; out HasMore: Boolean): TRippleItems;
 function FetchAppDetails(const StoreID, Platform: string): TRippleItem;
@@ -170,9 +175,60 @@ begin
   Result := ParseCatalog(FetchText(URL), Platform);
 end;
 
+function PageOffset(Page: Integer): Integer;
+begin
+  if (Page < 0) or (Page > High(Integer) div GalleryPageSize) then
+    raise Exception.Create('Invalid catalog page');
+  Result := Page * GalleryPageSize;
+end;
+
+function BrowseCatalogURL(Watchfaces: Boolean; const Platform: string; Page: Integer): string;
+begin
+  Result := 'https://appstore-api.rebble.io/api/v1/apps/collection/all/';
+  if Watchfaces then Result := Result + 'watchfaces' else Result := Result + 'apps';
+  Result := Result + '?limit=' + IntToStr(GalleryPageSize) + '&offset=' +
+    IntToStr(PageOffset(Page)) + '&firmware_version=3';
+  if Platform <> '' then Result := Result + '&hardware=' + EncodeURLElement(Platform) +
+    '&filter_hardware=true';
+end;
+
+function ParseCatalogPage(const Text, Platform: string; Page: Integer;
+  out HasMore: Boolean): TRippleItems;
+var Root, Next: TJSONData; Offset: Integer;
+begin
+  HasMore := False;
+  Offset := PageOffset(Page);
+  Result := ParseCatalog(Text, Platform);
+  Root := GetJSON(Text);
+  try
+    if not (Root is TJSONObject) then raise Exception.Create('Invalid paged catalog');
+    if Root.FindPath('hits') is TJSONArray then
+    begin
+      if TJSONObject(Root).Get('page', -1) <> Page then
+        raise Exception.Create('Unexpected search page');
+      HasMore := Page + 1 < TJSONObject(Root).Get('nbPages', 0);
+    end
+    else if Root.FindPath('data') is TJSONArray then
+    begin
+      if TJSONObject(Root).Get('offset', -1) <> Offset then
+        raise Exception.Create('Unexpected catalog offset');
+      Next := Root.FindPath('links.nextPage');
+      HasMore := (Next <> nil) and (Next.JSONType = jtString) and (Next.AsString <> '');
+    end
+    else raise Exception.Create('Invalid paged catalog');
+  finally Root.Free; end;
+end;
+
+function BrowseCatalog(Watchfaces: Boolean; const Platform: string; Page: Integer;
+  out HasMore: Boolean): TRippleItems;
+begin
+  Result := ParseCatalogPage(FetchText(BrowseCatalogURL(Watchfaces, Platform, Page)),
+    Platform, Page, HasMore);
+end;
+
 function SearchCatalog(const Query: string; Watchfaces: Boolean; const Platform: string;
   Page: Integer; out HasMore: Boolean): TRippleItems;
-var URL, Text, Kind: string; Root: TJSONData;
+var URL, Kind: string;
 begin
   if Page < 0 then raise Exception.Create('Invalid search page');
   if Watchfaces then Kind := 'watchface' else Kind := 'watchapp';
@@ -180,12 +236,7 @@ begin
     'x-algolia-application-id=7683OW76EQ&x-algolia-api-key=252f4938082b8693a8a9fc0157d1d24f' +
     '&query=' + EncodeURLElement(Query) + '&tagFilters=' + EncodeURLElement('(' + Kind + ')') +
     '&hitsPerPage=' + IntToStr(GalleryPageSize) + '&page=' + IntToStr(Page);
-  Text := FetchText(URL);
-  Result := ParseCatalog(Text, Platform);
-  Root := GetJSON(Text);
-  try
-    HasMore := (Root is TJSONObject) and (Page + 1 < TJSONObject(Root).Get('nbPages', 0));
-  finally Root.Free; end;
+  Result := ParseCatalogPage(FetchText(URL), Platform, Page, HasMore);
 end;
 
 function FetchAppDetails(const StoreID, Platform: string): TRippleItem;

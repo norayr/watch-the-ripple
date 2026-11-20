@@ -18,6 +18,7 @@ type
     FPercent: Integer;
     FQuery: string;
     FPage: Integer;
+    FFeatured: Boolean;
     procedure Progress(const Text: string; Percent: Integer);
     procedure Registered(const Item: TRippleItem);
     procedure RunOperation;
@@ -29,7 +30,7 @@ type
     ErrorText, Note: string;
     HasMore: Boolean;
     constructor Create(Operation: TRippleOperation; const Item: TRippleItem;
-      const Query: string = ''; Page: Integer = 0);
+      const Query: string = ''; Page: Integer = 0; Featured: Boolean = False);
     destructor Destroy; override;
     procedure Snapshot(out Done: Boolean; out Text: string; out Percent: Integer);
   end;
@@ -41,7 +42,7 @@ uses ripple_catalog, ripple_settings, ripple_http, ripple_pbw,
   ripple_temp, wtr_config;
 
 constructor TRippleWorker.Create(Operation: TRippleOperation; const Item: TRippleItem;
-  const Query: string; Page: Integer);
+  const Query: string; Page: Integer; Featured: Boolean);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
@@ -50,6 +51,7 @@ begin
   FItem := Item;
   FQuery := Query;
   FPage := Page;
+  FFeatured := Featured;
 end;
 
 destructor TRippleWorker.Destroy;
@@ -106,11 +108,18 @@ begin
       Items := SearchCatalog(FQuery, FOperation = roWatchfaces, Info.Platform, FPage, HasMore);
       Note := 'Rebble search: ' + FQuery;
     end
-    else
+    else if FFeatured then
     begin
       Progress('Loading Rebble catalog', 0);
       Items := FetchCatalog(FOperation = roWatchfaces, Info.Platform);
       Note := 'Rebble featured catalog';
+    end
+    else
+    begin
+      Progress('Loading Rebble catalog page ' + IntToStr(FPage + 1), 0);
+      Items := BrowseCatalog(FOperation = roWatchfaces, Info.Platform, FPage, HasMore);
+      if FOperation = roWatchfaces then Note := 'Rebble all watchfaces'
+      else Note := 'Rebble all watch apps';
     end;
     if Info.Platform = '' then Note := Note + '; refresh Installed to detect watch hardware'
     else Note := Note + ' for ' + Info.Platform;

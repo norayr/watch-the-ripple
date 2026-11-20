@@ -19,7 +19,7 @@ type
   end;
   TFormMain = class(TForm)
   private
-    FMode: TComboBox;
+    FMode, FSource: TComboBox;
     FRefresh, FDetect, FInstall, FRemove, FSearchButton: TButton;
     FPrevious, FNext, FImagePrevious, FImageNext: TButton;
     FSearch: TEdit;
@@ -42,12 +42,14 @@ type
     FSelected, FPage, FRequestedPage, FImageIndex, FGeneration: Integer;
     FQuery, FRequestedQuery: string;
     FHasMore, FDetailsReady, FClosing, FPopulating, FLayout: Boolean;
+    FRemote, FRequestedFeatured: Boolean;
     FWinPropertySet: Boolean;
     procedure CreateControls;
     procedure FormActivate(Sender: TObject);
     procedure Closing(Sender: TObject; var CanClose: Boolean);
     procedure RefreshClick(Sender: TObject);
     procedure ModeChanged(Sender: TObject);
+    procedure SourceChanged(Sender: TObject);
     procedure DetectClick(Sender: TObject);
     procedure InstallClick(Sender: TObject);
     procedure RemoveClick(Sender: TObject);
@@ -90,6 +92,7 @@ begin
   Constraints.MinHeight := 360;
   Position := poScreenCenter;
   FSelected := -1;
+  FRemote := True;
   OnActivate := @FormActivate;
   OnCloseQuery := @Closing;
   CreateControls;
@@ -153,6 +156,15 @@ var ModePanel, Actions, ImageActions: TPanel; I: Integer;
 
 begin
   ModePanel := Panel(Self, alTop, 40);
+  FSource := TComboBox.Create(Self);
+  FSource.Parent := ModePanel;
+  FSource.Width := 115;
+  FSource.Align := alRight;
+  FSource.Style := csDropDownList;
+  FSource.Items.Add('All');
+  FSource.Items.Add('Featured');
+  FSource.ItemIndex := 0;
+  FSource.OnChange := @SourceChanged;
   FMode := TComboBox.Create(Self);
   FMode.Parent := ModePanel;
   FMode.Align := alClient;
@@ -169,6 +181,8 @@ begin
   FDetect := Button(Actions, 'Detect watch', @DetectClick, 110);
   FInstall := Button(Actions, 'Install', @InstallClick, 78);
   FRemove := Button(Actions, 'Remove', @RemoveClick, 82);
+  FRemove.ShowHint := True;
+  FRemove.Hint := 'Remove from the watch if present, including apps installed by another companion';
 
   FSearchPanel := Panel(Self, alTop, 40);
   FSearchPanel.Top := 80;
@@ -177,7 +191,7 @@ begin
   FSearch := TEdit.Create(Self);
   FSearch.Parent := FSearchPanel;
   FSearch.Align := alClient;
-  FSearch.TextHint := 'Search Rebble; empty for featured';
+  FSearch.TextHint := 'Search Rebble; empty to browse';
   FSearch.OnKeyDown := @SearchKey;
 
   FPager := Panel(Self, alTop, 36);
@@ -329,7 +343,8 @@ begin
   Item := Default(TRippleItem);
   if (FSelected >= 0) and (FSelected < Length(FItems)) then Item := FItems[FSelected];
   FOperation := Operation;
-  FWorker := TRippleWorker.Create(Operation, Item, FRequestedQuery, FRequestedPage);
+  FWorker := TRippleWorker.Create(Operation, Item, FRequestedQuery, FRequestedPage,
+    FRequestedFeatured);
   FStatus.Caption := 'Working…';
   FProgress.Position := 0;
   FWorker.Start;
@@ -341,6 +356,8 @@ begin
   if FWorker <> nil then Exit;
   FRequestedQuery := Trim(FSearch.Text);
   FRequestedPage := 0;
+  if FRequestedQuery <> '' then FSource.ItemIndex := 0;
+  FRequestedFeatured := FSource.ItemIndex = 1;
   case FMode.ItemIndex of
     0: BeginOperation(roWatchfaces);
     1: BeginOperation(roApps);
@@ -355,9 +372,17 @@ begin
   FSearch.Clear;
   FPage := 0;
   FHasMore := False;
+  FRemote := (FMode.ItemIndex <> 2) and (FSource.ItemIndex = 0);
   if FMode.ItemIndex = 2 then FTabs.ActivePage := FListTab
   else FTabs.ActivePage := FGalleryTab;
   FillList;
+  RefreshClick(Sender);
+end;
+
+procedure TFormMain.SourceChanged(Sender: TObject);
+begin
+  if FWorker <> nil then Exit;
+  FSearch.Clear;
   RefreshClick(Sender);
 end;
 
@@ -376,10 +401,11 @@ begin
   NewPage := FPage;
   if Sender = FNext then Inc(NewPage) else Dec(NewPage);
   if NewPage < 0 then Exit;
-  if FQuery <> '' then
+  if FRemote then
   begin
     FRequestedPage := NewPage;
     FRequestedQuery := FQuery;
+    FRequestedFeatured := False;
     if FMode.ItemIndex = 0 then BeginOperation(roWatchfaces) else BeginOperation(roApps);
   end
   else
@@ -416,6 +442,8 @@ begin
   HasItem := (FSelected >= 0) and (FSelected < Length(FItems));
   DetailsView := FTabs.ActivePage = FDetailsTab;
   FMode.Enabled := Idle;
+  FSource.Enabled := Idle;
+  FSource.Visible := FMode.ItemIndex <> 2;
   FRefresh.Enabled := Idle;
   FDetect.Enabled := Idle;
   FSearch.Enabled := Idle;
@@ -431,10 +459,11 @@ begin
   FRemove.Enabled := Idle and HasItem and DetailsView;
   if FRemove.Enabled then FRemove.Enabled := FItems[FSelected].UUID <> '';
   FPrevious.Enabled := Idle and (FPage > 0);
-  if FQuery <> '' then
+  if FRemote then
   begin
     FNext.Enabled := Idle and FHasMore;
-    FPageLabel.Caption := 'Search page ' + IntToStr(FPage + 1);
+    if FQuery <> '' then FPageLabel.Caption := 'Search page ' + IntToStr(FPage + 1)
+    else FPageLabel.Caption := 'All — page ' + IntToStr(FPage + 1);
   end
   else
   begin
@@ -450,7 +479,7 @@ end;
 
 function TFormMain.PageStart: Integer;
 begin
-  if FQuery <> '' then Result := 0 else Result := GalleryPageStart(FPage, Length(FItems));
+  if FRemote then Result := 0 else Result := GalleryPageStart(FPage, Length(FItems));
 end;
 
 procedure TFormMain.Selected(Sender: TObject; Item: TListItem; IsSelected: Boolean);
@@ -487,6 +516,8 @@ begin
   if (FSelected < 0) or (FSelected >= Length(FItems)) then Exit;
   A := FItems[FSelected];
   DetailsText := A.Title + ' — ' + A.Author;
+  if FMode.ItemIndex <> 2 then DetailsText := DetailsText + LineEnding +
+    'Installation status: unknown. Remove sends this app UUID to the watch if present.';
   if A.Version <> '' then DetailsText := DetailsText + LineEnding + 'Version: ' + A.Version;
   if A.Incompatible then DetailsText := DetailsText + LineEnding + 'Not compatible with the detected watch.';
   if A.Configurable then DetailsText := DetailsText + LineEnding +
@@ -705,6 +736,7 @@ begin
           end;
           FQuery := FRequestedQuery;
           FPage := FRequestedPage;
+          FRemote := (FMode.ItemIndex <> 2) and not FRequestedFeatured;
           FHasMore := FWorker.HasMore;
           if FMode.ItemIndex = 2 then FTabs.ActivePage := FListTab
           else if FTabs.ActivePage = FDetailsTab then FTabs.ActivePage := FGalleryTab;
