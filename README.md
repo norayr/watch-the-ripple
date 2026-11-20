@@ -158,7 +158,9 @@ mode support.
    featured catalog. Hardware filtering uses the last detected platform; until
    detection, the catalog is unfiltered.
 4. Select an item and choose **Install**. Ripple downloads the PBW, checks its
-   platform, sizes, and CRCs, and transfers it to the watch.
+   platform, sizes, and CRCs, and transfers it to the watch. On firmware 3 and
+   later, it queries the watch's app-run state and reports success only after
+   confirming that the selected app or watchface has launched.
 5. Select **Installed / Ripple records** to view app entries and select **Remove**
    to remove one from the watch.
 
@@ -174,7 +176,9 @@ BlobDB app registration and AppFetch transfers. Its app list shows saved
 registration records for the configured Bluetooth address. Apps installed by another companion are
 absent; records can become stale after a watch reset or removal elsewhere.
 A failed transfer can leave an app registration, which can be removed from the
-records view and then installed again.
+records view and then installed again. Each record's details distinguish a
+confirmed launch from an unconfirmed registration. Launch confirmation is
+recorded at installation time and does not establish the app's current state.
 
 Ripple transfers app binaries, resources, and optional workers. Phone-side
 PebbleKit JavaScript and app configuration pages are unsupported, so apps needing
@@ -201,6 +205,9 @@ notifications are not implemented.
 `wtr status` reports whether the managed daemon process is running. Watch
 connection attempts and errors appear in `wtr log`. After a graphical watch
 operation, the daemon may already have reconnected, even if that operation failed.
+When launched from a terminal, the graphical `ripple` application prints its
+transfer phases, app IDs, and results there; these messages are separate from
+the daemon's log.
 
 Stop the managed daemon before running a foreground session or a smoke test:
 

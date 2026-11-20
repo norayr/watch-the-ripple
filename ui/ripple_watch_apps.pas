@@ -106,7 +106,7 @@ end;
 function PutBytesInit(Size: Cardinal; Kind: Byte; AppID: Cardinal; Modern: Boolean): TRippleBytes;
 begin
   Result := Join(Bytes([1]), U32BE(Size));
-  if Modern then Result := Join(Result, Join(Bytes([Kind or $80]), U32LE(AppID)))
+  if Modern then Result := Join(Result, Join(Bytes([Kind or $80]), U32BE(AppID)))
   else
   begin
     if AppID > 255 then raise Exception.Create('Invalid app bank');
@@ -117,6 +117,7 @@ end;
 procedure Upload(Link: TWatchLink; const Data: TRippleBytes; Kind: Byte;
   AppID: Cardinal; Modern: Boolean; Base, Total: Int64; Progress: TRippleProgress);
 var Response, Packet: TRippleBytes; Cookie: Cardinal; Pos, Count: Integer;
+  TransferText: string;
 
   procedure Ack(const Stage: string; AllowClearedToken: Boolean = False);
   var ReplyCookie: Cardinal;
@@ -134,6 +135,14 @@ var Response, Packet: TRippleBytes; Cookie: Cardinal; Pos, Count: Integer;
   end;
 
 begin
+  case Kind of
+    4: TransferText := 'Sending resources';
+    5: TransferText := 'Sending application binary';
+    7: TransferText := 'Sending worker';
+    else TransferText := 'Sending app file';
+  end;
+  TransferText := TransferText + ' to watch (app ID ' + IntToHex(AppID, 8) + ')';
+  if Assigned(Progress) then Progress(TransferText, Base * 100 div Total);
   Link.Send(EP_PUT_BYTES, PutBytesInit(Length(Data), Kind, AppID, Modern));
   Response := Link.Wait(EP_PUT_BYTES);
   RequireBytes(Response, 0, 5);
@@ -149,7 +158,7 @@ begin
       Link.Send(EP_PUT_BYTES, Join(Packet, Copy(Data, Pos, Count)));
       Ack('data');
       Inc(Pos, Count);
-      if Assigned(Progress) then Progress('Sending app to watch', (Base + Pos) * 100 div Total);
+      if Assigned(Progress) then Progress(TransferText, (Base + Pos) * 100 div Total);
     end;
     Link.Send(EP_PUT_BYTES, Join(Bytes([3]), Join(U32BE(Cookie), U32BE(PebbleCRC(Data)))));
     Ack('commit');
@@ -162,6 +171,33 @@ begin
   end;
 end;
 
+procedure ConfirmAppLaunch(Link: TWatchLink; const UUID: string);
+var Deadline, Now: QWord; Response: TRippleBytes; LastState: string;
+begin
+  Deadline := GetTickCount64 + 30000;
+  LastState := '';
+  try
+    repeat
+      Now := GetTickCount64;
+      if Now >= Deadline then raise EWatchTimeout.Create('Launch confirmation timed out');
+      // Query afresh because launch notifications can arrive during the final transfer ACK.
+      Link.Send(EP_RUN_STATE, Bytes([3]));
+      Now := GetTickCount64;
+      if Now >= Deadline then raise EWatchTimeout.Create('Launch confirmation timed out');
+      Response := Link.Wait(EP_RUN_STATE, Deadline - Now);
+      if (Length(Response) < 17) or not (Response[0] in [1, 2]) then
+        raise Exception.Create('Invalid watch launch-state response; installation is unconfirmed');
+      if (Response[0] = 1) and (UUIDText(Response, 1) = UUID) then Exit;
+      LastState := ' Last reported UUID: ' + UUIDText(Response, 1) + '.';
+      Sleep(100);
+    until False;
+  except
+    on E: EWatchTimeout do
+      raise Exception.Create('App files transferred, but the watch did not confirm launch of ' +
+        UUID + '.' + LastState + ' The saved registration does not confirm installation.');
+  end;
+end;
+
 procedure InstallWatchApp(Link: TWatchLink; PBW: TPBW; Modern: Boolean;
   Progress: TRippleProgress; Registered: TRippleRegistered);
 var Apps: TRippleItems; Banks, Bank, AppID: Cardinal; I: Integer;
@@ -169,6 +205,7 @@ var Apps: TRippleItems; Banks, Bank, AppID: Cardinal; I: Integer;
 begin
   if Modern then
   begin
+    if Assigned(Progress) then Progress('Registering app metadata on watch', 0);
     BlobCommand(Link, 1, PBW.Item.UUID, PBW.Metadata);
     if Assigned(Registered) then Registered(PBW.Item);
     Link.Send(EP_RUN_STATE, Join(Bytes([1]), UUIDBytes(PBW.Item.UUID)));
@@ -180,6 +217,7 @@ begin
       raise Exception.Create('Watch requested a different app; try installing again');
     end;
     AppID := Read32LE(Response, 17);
+    if Assigned(Progress) then Progress('Watch requested app ID ' + IntToHex(AppID, 8), 0);
     Link.Send(EP_APP_FETCH, Bytes([1, 1]));
   end
   else
@@ -202,7 +240,13 @@ begin
   if Length(PBW.Worker) > 0 then
     Upload(Link, PBW.Worker, 7, AppID, Modern,
       Int64(Length(PBW.Binary)) + Length(PBW.Resources), Total, Progress);
-  if not Modern then
+  if Modern then
+  begin
+    if Assigned(Progress) then Progress('Verifying app launch on watch', 100);
+    ConfirmAppLaunch(Link, PBW.Item.UUID);
+    if Assigned(Progress) then Progress('Watch confirmed app launch', 100);
+  end
+  else
   begin
     Link.Send(EP_APP_MANAGER, Join(Bytes([3]), U32BE(AppID)));
     Apps := ListWatchApps(Link, Banks);
@@ -210,7 +254,7 @@ begin
     while (I < Length(Apps)) and (Apps[I].UUID <> PBW.Item.UUID) do Inc(I);
     if I = Length(Apps) then raise Exception.Create('App transferred but watch registration failed');
   end;
-  if Assigned(Progress) then Progress('App transfer completed', 100);
+  if not Modern and Assigned(Progress) then Progress('Watch confirmed app registration', 100);
 end;
 
 end.

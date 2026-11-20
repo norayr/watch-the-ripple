@@ -10,12 +10,16 @@ const AppUUID = '00112233-4455-6677-8899-aabbccddeeff';
   ObjectTypes: array[1..3] of Byte = (5, 4, 7);
 
 type
+  TLaunchReply = (lrRunning, lrDelayed, lrNoResponse, lrOtherThenTimeout,
+    lrStoppedThenTimeout, lrMalformed);
   TFakeLink = class(TWatchLink)
     Last: TRippleBytes;
     LastEP: Word;
     Initializations, Commits, Completes, Chunks, Aborts: Integer;
     Modern, RejectChunk, MetadataWritten, Refreshed, CompletionEchoesToken: Boolean;
     WrongTokenCommand, ZeroTokenCommand, RejectCommand, ShortReplyCommand: Byte;
+    RunStateQueries: Integer;
+    LaunchReply: TLaunchReply;
     procedure Send(Endpoint: Word; const Data: TRippleBytes); override;
     function Wait(Endpoint: Word; TimeoutMS: Integer = 15000): TRippleBytes; override;
   end;
@@ -71,7 +75,7 @@ begin
             Check(Length(Data) = 10, 'modern PutBytes init size');
             Check(Data[5] = ($80 or ObjectTypes[Initializations]),
               'modern PutBytes object type');
-            Check(Read32LE(Data, 6) = $01020304, 'modern app ID byte order');
+            Check(Read32BE(Data, 6) = $01020304, 'PutBytes app ID converted from AppFetch byte order');
           end
           else Check(Length(Data) = 7, 'legacy PutBytes init size');
         end;
@@ -87,14 +91,40 @@ begin
     end;
   end;
   if (Endpoint = EP_APP_MANAGER) and (Data[0] = 3) then Refreshed := True;
+  if (Endpoint = EP_RUN_STATE) and (Data[0] = 3) then
+  begin
+    Check(Modern and (Completes = 3), 'launch queried after all app files are installed');
+    Inc(RunStateQueries);
+  end;
 end;
 
 function TFakeLink.Wait(Endpoint: Word; TimeoutMS: Integer): TRippleBytes;
+var Version: string;
 begin
   Result := nil;
   case Endpoint of
+    EP_VERSION:
+      begin
+        SetLength(Result, 95);
+        Result[0] := 1;
+        Result[46] := 5;
+        Version := 'v3.13.3-rbl';
+        Move(Version[1], Result[5], Length(Version));
+      end;
     EP_BLOB_DB: Result := Join(Copy(Last, 1, 2), Bytes([1]));
-    EP_APP_FETCH: Result := Join(Bytes([1]), Join(UUIDBytes(AppUUID), U32LE($01020304)));
+    EP_APP_FETCH: Result := Join(Bytes([1]), Join(UUIDBytes(AppUUID), Bytes([4, 3, 2, 1])));
+    EP_RUN_STATE:
+      begin
+        Check(RunStateQueries > 0, 'fresh launch-state query sent');
+        if (LaunchReply = lrNoResponse) or
+          ((LaunchReply in [lrOtherThenTimeout, lrStoppedThenTimeout]) and (RunStateQueries > 1)) then
+          raise EWatchTimeout.Create('No watch launch response');
+        if LaunchReply = lrMalformed then Exit(Bytes([1]));
+        if LaunchReply = lrStoppedThenTimeout then Exit(Join(Bytes([2]), UUIDBytes(AppUUID)));
+        if (RunStateQueries = 1) and (LaunchReply in [lrDelayed, lrOtherThenTimeout]) then
+          Exit(Join(Bytes([1]), UUIDBytes('ffffffff-ffff-ffff-ffff-ffffffffffff')));
+        Result := Join(Bytes([1]), UUIDBytes(AppUUID));
+      end;
     EP_PUT_BYTES:
       if (RejectChunk and (Last[0] = 2)) or (RejectCommand = Last[0]) then
         Result := Join(Bytes([2]), U32BE(0))
@@ -122,7 +152,8 @@ begin
 end;
 
 procedure TestBytesAndCRC;
-var B: TRippleBytes; Failed: Boolean;
+const InitPacket: array[0..9] of Byte = (1, $11, $22, $33, $44, $85, 1, 2, 3, 4);
+var B: TRippleBytes; Failed: Boolean; I: Integer;
 begin
   Check(UUIDText(UUIDBytes(AppUUID), 0) = AppUUID, 'UUID round trip');
   Check(Read32BE(U32BE($89ABCDEF), 0) = $89ABCDEF, 'big endian');
@@ -134,10 +165,14 @@ begin
   B := Bytes([1, 2, 3, 4]);
   Check(PebbleCRC(B) = $1DABE74F, 'word CRC');
   Check(PebbleCRC(Bytes([1, 2, 3])) = $6B6DC92A, 'partial-word CRC');
+  B := PutBytesInit($11223344, 5, $01020304, True);
+  Check(Length(B) = Length(InitPacket), 'PutBytes app-init packet length');
+  for I := 0 to High(InitPacket) do
+    Check(B[I] = InitPacket[I], 'PutBytes app-init wire bytes');
 end;
 
 procedure TestInfo(const Root: string);
-var B: TRippleBytes; Info: TWatchInfo; S: string; Stream: TFileStream;
+var B: TRippleBytes; Info: TWatchInfo; S: string; Stream: TFileStream; Link: TFakeLink;
 begin
   Check(PlatformForHardware(5) = 'aplite', 'Pebble Steel hardware');
   Check(PlatformForHardware(10) = 'basalt', 'Pebble Time Steel hardware');
@@ -168,6 +203,13 @@ begin
   Info := ParseWatchInfo(B);
   Check((Info.Firmware = 'v3.13.3-rbl') and (Info.Major = 3) and
     (Info.Platform = 'aplite'), 'packed firmware-3 version response');
+  Link := TFakeLink.Create;
+  try
+    Info := Link.Identify;
+    Check((Info.Platform = 'aplite') and (Link.LastEP = 17), 'identification advertises phone capabilities');
+    Check((Length(Link.Last) = 25) and (Read32LE(Link.Last, 17) = 1),
+      'identification advertises app-run-state support');
+  finally Link.Free; end;
 end;
 
 procedure TestTempPBW(const Root: string);
@@ -307,9 +349,53 @@ begin
   SaveManagedApp(Info.Address, Item, False);
   Items := LoadManagedApps(Info.Address);
   Check((Length(Items) = 1) and (Items[0].UUID = AppUUID), 'saved app record');
+  Check(Pos('launch has not been confirmed', Items[0].Description) > 0,
+    'registration alone does not confirm installation');
+  SaveManagedApp(Info.Address, Item, False, True);
+  Items := LoadManagedApps(Info.Address);
+  Check(Pos('launch was confirmed', Items[0].Description) > 0, 'confirmed launch recorded');
+  SaveManagedApp(Info.Address, Item, False);
+  Items := LoadManagedApps(Info.Address);
+  Check(Pos('launch has not been confirmed', Items[0].Description) > 0,
+    'new registration resets prior launch confirmation');
   Check(Length(LoadManagedApps('AA:BB:CC:DD:EE:FF')) = 0, 'app records scoped to watch');
   SaveManagedApp(Info.Address, Item, True);
   Check(Length(LoadManagedApps(Info.Address)) = 0, 'removed saved record');
+end;
+
+procedure TestLaunchConfirmation(const Root: string);
+var PBW: TPBW; Link: TFakeLink; Mode: TLaunchReply; ErrorText: string;
+begin
+  PBW := TPBW.Create(Root + '/test.pbw', 'basalt');
+  try
+    for Mode := Low(TLaunchReply) to High(TLaunchReply) do
+    begin
+      Link := TFakeLink.Create;
+      try
+        Link.Modern := True;
+        Link.LaunchReply := Mode;
+        ErrorText := '';
+        try InstallWatchApp(Link, PBW, True, nil);
+        except on E: Exception do ErrorText := E.Message; end;
+        Check((Link.Completes = 3) and (Link.RunStateQueries > 0),
+          'transfer ACKs followed by launch verification');
+        if Mode in [lrRunning, lrDelayed] then
+        begin
+          Check(ErrorText = '', 'target launch confirmed');
+          if Mode = lrDelayed then Check(Link.RunStateQueries = 2, 'old app state queried again');
+        end
+        else if Mode = lrMalformed then
+          Check(Pos('installation is unconfirmed', ErrorText) > 0, 'malformed launch state rejected')
+        else
+          Check(Pos('watch did not confirm launch', ErrorText) > 0,
+            'successful transfer without target launch not reported as installed');
+        if Mode = lrOtherThenTimeout then
+          Check(Pos('ffffffff-ffff-ffff-ffff-ffffffffffff', ErrorText) > 0,
+            'last reported watch app included in failure');
+        Check(Link.Aborts = 0, 'completed transfers not aborted after unconfirmed launch');
+      finally Link.Free; end;
+    end;
+  finally PBW.Free; end;
 end;
 
 procedure TestTransferAcknowledgements(const Root: string);
@@ -522,6 +608,7 @@ begin
   TestTLS;
   TestPBW(ParamStr(1));
   TestTransferAcknowledgements(ParamStr(1));
+  TestLaunchConfirmation(ParamStr(1));
   TestTempPBW(ParamStr(1));
   TestCatalogAndSettings;
   TestDaemon(ParamStr(1));

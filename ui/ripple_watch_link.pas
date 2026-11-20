@@ -15,6 +15,7 @@ const
   EP_RUN_STATE = 52;
 
 type
+  EWatchTimeout = class(Exception);
   EBluetoothConnect = class(Exception)
   private
     FErrorCode: Integer;
@@ -129,6 +130,8 @@ function TWatchLink.Identify: TWatchInfo;
 begin
   Send(EP_VERSION, Bytes([0]));
   Result := ParseWatchInfo(Wait(EP_VERSION));
+  // Announce app-run-state support before issuing watch app operations.
+  Send(17, PhoneVersionReply);
 end;
 
 function PhoneVersionReply: TRippleBytes;
@@ -143,7 +146,7 @@ var FDs: TFDSet; TV: TTimeVal; Remaining: Int64; N: LongInt;
 begin
   repeat
     Remaining := Int64(Deadline) - Int64(GetTickCount64);
-    if Remaining <= 0 then raise Exception.Create('Bluetooth operation timed out');
+    if Remaining <= 0 then raise EWatchTimeout.Create('Bluetooth operation timed out');
     fpFD_ZERO(FDs);
     fpFD_SET(FSocket, FDs);
     TV.tv_sec := Remaining div 1000;
@@ -151,7 +154,7 @@ begin
     if Writing then N := fpSelect(FSocket + 1, nil, @FDs, nil, @TV)
     else N := fpSelect(FSocket + 1, @FDs, nil, nil, @TV);
     if N > 0 then Exit;
-    if N = 0 then raise Exception.Create('Bluetooth operation timed out');
+    if N = 0 then raise EWatchTimeout.Create('Bluetooth operation timed out');
   until fpGetErrno <> ESysEINTR;
   raise Exception.Create('Bluetooth socket error: ' + SysErrorMessage(fpGetErrno));
 end;

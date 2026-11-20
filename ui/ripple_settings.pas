@@ -10,7 +10,8 @@ function WatchAddress: string;
 function LoadWatchInfo(const Address: string): TWatchInfo;
 procedure SaveWatchInfo(const Info: TWatchInfo);
 function LoadManagedApps(const Address: string): TRippleItems;
-procedure SaveManagedApp(const Address: string; const Item: TRippleItem; Remove: Boolean);
+procedure SaveManagedApp(const Address: string; const Item: TRippleItem; Remove: Boolean;
+  LaunchConfirmed: Boolean = False);
 
 implementation
 
@@ -90,12 +91,18 @@ begin
       Result[I].Title := Ini.ReadString(Sections[I], 'title', Sections[I]);
       Result[I].Author := Ini.ReadString(Sections[I], 'author', '');
       Result[I].Version := Ini.ReadString(Sections[I], 'version', '');
-      Result[I].Description := 'App registration saved by Ripple on this phone. This record is not a fresh watch inventory; a failed transfer can leave a registration without its binary.';
+      Result[I].Description := 'App registration saved by Ripple on this phone. ';
+      if Ini.ReadBool(Sections[I], 'launch_confirmed', False) then
+        Result[I].Description := Result[I].Description + 'Watch launch was confirmed when installed. '
+      else Result[I].Description := Result[I].Description + 'Watch launch has not been confirmed. ';
+      Result[I].Description := Result[I].Description +
+        'This saved record is not a fresh watch inventory; a failed transfer can leave a registration without its binary.';
     end;
   finally Sections.Free; Ini.Free; end;
 end;
 
-procedure SaveManagedApp(const Address: string; const Item: TRippleItem; Remove: Boolean);
+procedure SaveManagedApp(const Address: string; const Item: TRippleItem; Remove: Boolean;
+  LaunchConfirmed: Boolean);
 var Ini: TIniFile; Path: string;
 begin
   UUIDBytes(Item.UUID);
@@ -110,6 +117,7 @@ begin
       Ini.WriteString(Item.UUID, 'title', Item.Title);
       Ini.WriteString(Item.UUID, 'author', Item.Author);
       Ini.WriteString(Item.UUID, 'version', Item.Version);
+      Ini.WriteBool(Item.UUID, 'launch_confirmed', LaunchConfirmed);
     end;
   finally Ini.Free; end;
 end;

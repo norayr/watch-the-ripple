@@ -54,7 +54,10 @@ end;
 procedure TRippleWorker.Progress(const Text: string; Percent: Integer);
 begin
   FLock.Acquire;
-  try FText := Text; FPercent := Percent;
+  try
+    if FText <> Text then WriteLn('Ripple: ', Text);
+    FText := Text;
+    FPercent := Percent;
   finally FLock.Release; end;
 end;
 
@@ -124,8 +127,9 @@ begin
                     if (FItem.UUID <> '') and (LowerCase(FItem.UUID) <> PBW.Item.UUID) then
                       raise Exception.Create('PBW UUID does not match the catalog entry');
                     InstallWatchApp(Link, PBW, Info.Major >= 3, @Progress, @Registered);
-                    SaveManagedApp(Address, PBW.Item, False);
-                    Note := 'Installed ' + PBW.Item.Title;
+                    SaveManagedApp(Address, PBW.Item, False, Info.Major >= 3);
+                    if Info.Major >= 3 then Note := 'Installed and launched ' + PBW.Item.Title
+                    else Note := 'Installed ' + PBW.Item.Title;
                   finally PBW.Free; end;
                 end;
               roRemove:
@@ -177,9 +181,14 @@ begin
     try RunOperation;
     except on E: Exception do ErrorText := E.Message; end;
   finally
-    FLock.Acquire;
-    try FDone := True;
-    finally FLock.Release; end;
+    try
+      if ErrorText <> '' then WriteLn('Ripple: ', ErrorText)
+      else if Note <> '' then WriteLn('Ripple: ', Note);
+    finally
+      FLock.Acquire;
+      try FDone := True;
+      finally FLock.Release; end;
+    end;
   end;
 end;
 
