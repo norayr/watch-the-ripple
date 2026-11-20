@@ -14,7 +14,8 @@ type
     Last: TRippleBytes;
     LastEP: Word;
     Initializations, Commits, Completes, Chunks, Aborts: Integer;
-    Modern, RejectChunk, MetadataWritten, Refreshed: Boolean;
+    Modern, RejectChunk, MetadataWritten, Refreshed, CompletionEchoesToken: Boolean;
+    WrongTokenCommand, ZeroTokenCommand, RejectCommand, ShortReplyCommand: Byte;
     procedure Send(Endpoint: Word; const Data: TRippleBytes); override;
     function Wait(Endpoint: Word; TimeoutMS: Integer = 15000): TRippleBytes; override;
   end;
@@ -58,6 +59,9 @@ begin
     end;
   end;
   if Endpoint = EP_PUT_BYTES then
+  begin
+    if Data[0] <> 1 then
+      Check(Read32BE(Data, 1) = $12345678, 'requests retain the transfer token');
     case Data[0] of
       1:
         begin
@@ -81,6 +85,7 @@ begin
       4: Inc(Aborts);
       5: Inc(Completes);
     end;
+  end;
   if (Endpoint = EP_APP_MANAGER) and (Data[0] = 3) then Refreshed := True;
 end;
 
@@ -91,7 +96,12 @@ begin
     EP_BLOB_DB: Result := Join(Copy(Last, 1, 2), Bytes([1]));
     EP_APP_FETCH: Result := Join(Bytes([1]), Join(UUIDBytes(AppUUID), U32LE($01020304)));
     EP_PUT_BYTES:
-      if RejectChunk and (Last[0] = 2) then Result := Bytes([2])
+      if (RejectChunk and (Last[0] = 2)) or (RejectCommand = Last[0]) then
+        Result := Join(Bytes([2]), U32BE(0))
+      else if ShortReplyCommand = Last[0] then Result := Bytes([1])
+      else if WrongTokenCommand = Last[0] then Result := Join(Bytes([1]), U32BE($87654321))
+      else if (ZeroTokenCommand = Last[0]) or ((Last[0] = 5) and not CompletionEchoesToken) then
+        Result := Join(Bytes([1]), U32BE(0))
       else Result := Join(Bytes([1]), U32BE($12345678));
     EP_APP_MANAGER:
       case Last[0] of
@@ -302,6 +312,81 @@ begin
   Check(Length(LoadManagedApps(Info.Address)) = 0, 'removed saved record');
 end;
 
+procedure TestTransferAcknowledgements(const Root: string);
+const Commands: array[0..2] of Byte = (2, 3, 5);
+  Stages: array[0..2] of string = ('data', 'commit', 'completion');
+var PBW: TPBW; Link: TFakeLink; I: Integer; ErrorText: string;
+begin
+  PBW := TPBW.Create(Root + '/test.pbw', 'basalt');
+  try
+    Link := TFakeLink.Create;
+    try
+      Link.Modern := True;
+      Link.CompletionEchoesToken := True;
+      InstallWatchApp(Link, PBW, True, nil);
+      Check((Link.Completes = 3) and (Link.Aborts = 0), 'completion ACK with matching token');
+    finally Link.Free; end;
+    Link := TFakeLink.Create;
+    try
+      Link.Modern := True;
+      InstallWatchApp(Link, PBW, True, nil);
+      Check((Link.Completes = 3) and (Link.Aborts = 0), 'completion ACK with cleared token');
+    finally Link.Free; end;
+    for I := 0 to High(Commands) do
+    begin
+      Link := TFakeLink.Create;
+      try
+        Link.Modern := True;
+        Link.WrongTokenCommand := Commands[I];
+        ErrorText := '';
+        try InstallWatchApp(Link, PBW, True, nil);
+        except on E: Exception do ErrorText := E.Message; end;
+        Check((Pos('during ' + Stages[I], ErrorText) > 0) and
+          (Pos('expected 12345678, received 87654321', ErrorText) > 0),
+          'wrong token reported with stage and values');
+        Check(Link.Aborts = 1, 'wrong transfer token aborts upload');
+      finally Link.Free; end;
+    end;
+    for I := 0 to 1 do
+    begin
+      Link := TFakeLink.Create;
+      try
+        Link.Modern := True;
+        Link.ZeroTokenCommand := Commands[I];
+        ErrorText := '';
+        try InstallWatchApp(Link, PBW, True, nil);
+        except on E: Exception do ErrorText := E.Message; end;
+        Check((Pos('during ' + Stages[I], ErrorText) > 0) and
+          (Pos('expected 12345678, received 00000000', ErrorText) > 0),
+          'cleared token rejected before completion');
+        Check((Link.Aborts = 1) and (Link.Completes = 0), 'premature token clearing stops upload');
+      finally Link.Free; end;
+    end;
+    Link := TFakeLink.Create;
+    try
+      Link.Modern := True;
+      Link.RejectCommand := 5;
+      ErrorText := '';
+      try InstallWatchApp(Link, PBW, True, nil);
+      except on E: Exception do ErrorText := E.Message; end;
+      Check(Pos('rejected file transfer during completion', ErrorText) > 0,
+        'completion NACK with zero token rejected');
+      Check((Link.Initializations = 1) and (Link.Aborts = 1), 'completion failure stops remaining files');
+    finally Link.Free; end;
+    Link := TFakeLink.Create;
+    try
+      Link.Modern := True;
+      Link.ShortReplyCommand := 5;
+      ErrorText := '';
+      try InstallWatchApp(Link, PBW, True, nil);
+      except on E: Exception do ErrorText := E.Message; end;
+      Check(Pos('Truncated file transfer acknowledgement during completion', ErrorText) > 0,
+        'truncated completion ACK rejected');
+      Check(Link.Aborts = 1, 'truncated response aborts upload');
+    finally Link.Free; end;
+  finally PBW.Free; end;
+end;
+
 procedure TestDaemon(const Root: string);
 var D: TDaemonPause; Log: TStringList; F: TFileStream;
 begin
@@ -436,6 +521,7 @@ begin
   TestInventory;
   TestTLS;
   TestPBW(ParamStr(1));
+  TestTransferAcknowledgements(ParamStr(1));
   TestTempPBW(ParamStr(1));
   TestCatalogAndSettings;
   TestDaemon(ParamStr(1));

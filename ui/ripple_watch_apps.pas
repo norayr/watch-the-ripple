@@ -118,13 +118,19 @@ procedure Upload(Link: TWatchLink; const Data: TRippleBytes; Kind: Byte;
   AppID: Cardinal; Modern: Boolean; Base, Total: Int64; Progress: TRippleProgress);
 var Response, Packet: TRippleBytes; Cookie: Cardinal; Pos, Count: Integer;
 
-  procedure Ack;
+  procedure Ack(const Stage: string; AllowClearedToken: Boolean = False);
+  var ReplyCookie: Cardinal;
   begin
     Response := Link.Wait(EP_PUT_BYTES);
-    RequireBytes(Response, 0, 1);
-    if Response[0] <> 1 then raise Exception.Create('Watch rejected file transfer');
-    if (Length(Response) >= 5) and (Read32BE(Response, 1) <> Cookie) then
-      raise Exception.Create('Unexpected file transfer token');
+    if Length(Response) < 5 then
+      raise Exception.Create('Truncated file transfer acknowledgement during ' + Stage);
+    if Response[0] <> 1 then
+      raise Exception.CreateFmt('Watch rejected file transfer during %s (status %d)',
+        [Stage, Response[0]]);
+    ReplyCookie := Read32BE(Response, 1);
+    if (ReplyCookie <> Cookie) and not (AllowClearedToken and (ReplyCookie = 0)) then
+      raise Exception.Create('Unexpected file transfer token during ' + Stage +
+        ': expected ' + IntToHex(Cookie, 8) + ', received ' + IntToHex(ReplyCookie, 8));
   end;
 
 begin
@@ -141,14 +147,15 @@ begin
       if Count > 2000 then Count := 2000;
       Packet := Join(Bytes([2]), Join(U32BE(Cookie), U32BE(Count)));
       Link.Send(EP_PUT_BYTES, Join(Packet, Copy(Data, Pos, Count)));
-      Ack;
+      Ack('data');
       Inc(Pos, Count);
       if Assigned(Progress) then Progress('Sending app to watch', (Base + Pos) * 100 div Total);
     end;
     Link.Send(EP_PUT_BYTES, Join(Bytes([3]), Join(U32BE(Cookie), U32BE(PebbleCRC(Data)))));
-    Ack;
+    Ack('commit');
     Link.Send(EP_PUT_BYTES, Join(Bytes([5]), U32BE(Cookie)));
-    Ack;
+    // Older firmware clears the active token before acknowledging completion.
+    Ack('completion', True);
   except
     try Link.Send(EP_PUT_BYTES, Join(Bytes([4]), U32BE(Cookie))); except end;
     raise;
