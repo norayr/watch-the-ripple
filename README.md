@@ -253,9 +253,12 @@ session hook, Hildon desktop entry, and icon. Debian packaging is under `debian/
 a local binary-package build can use `dpkg-buildpackage -b -us -uc` once its build dependencies are
 installed. `DEB_BUILD_OPTIONS=nocheck` skips tests in Debian builds.
 
-The Forgejo workflow delegates to the shared Maemo Leste workflow. Packaging
-targets the `maemo/excalibur` branch; `debian/gbp.conf` selects upstream tags
-matching the upstream version, such as `0.1.0`.
+Development sources use the `main` branch. The Forgejo package workflow runs
+on pushes to `maemo/**` branches and pull requests targeting those branches,
+delegating to the shared Maemo Leste workflow. Packaging targets
+`maemo/excalibur`; `debian/gbp.conf` selects upstream tags matching the upstream
+version, such as `0.1.0`. The package version comes from `debian/changelog`;
+changing the changelog is separate from triggering the workflow.
 
 ## License and credits
 

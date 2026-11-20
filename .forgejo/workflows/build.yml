@@ -1,7 +1,9 @@
 on:
   workflow_call:
   push:
+    branches: ['maemo/**']
   pull_request:
+    branches: ['maemo/**']
     types: [opened, synchronize, reopened]
 
 enable-email-notifications: true
