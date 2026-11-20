@@ -4,7 +4,7 @@ program test_ripple_ui;
 
 uses Classes, SysUtils, Process, BaseUnix, ripple_types, ripple_bytes, ripple_crc, ripple_catalog,
   ripple_http, ripple_watch_link, ripple_watch_apps, ripple_pbw, ripple_settings,
-  ripple_daemon, ripple_watch_access;
+  ripple_daemon, ripple_watch_access, ripple_temp;
 
 const AppUUID = '00112233-4455-6677-8899-aabbccddeeff';
   ObjectTypes: array[1..3] of Byte = (5, 4, 7);
@@ -126,8 +126,8 @@ begin
   Check(PebbleCRC(Bytes([1, 2, 3])) = $6B6DC92A, 'partial-word CRC');
 end;
 
-procedure TestInfo;
-var B: TRippleBytes; Info: TWatchInfo; S: string;
+procedure TestInfo(const Root: string);
+var B: TRippleBytes; Info: TWatchInfo; S: string; Stream: TFileStream;
 begin
   Check(PlatformForHardware(5) = 'aplite', 'Pebble Steel hardware');
   Check(PlatformForHardware(10) = 'basalt', 'Pebble Time Steel hardware');
@@ -142,11 +142,58 @@ begin
   B := nil;
   SetLength(B, 95);
   B[0] := 1;
-  B[45] := 8;
+  B[45] := 0;
+  B[46] := 8;
   S := 'v4.3.1';
   Move(S[1], B[5], Length(S));
   Info := ParseWatchInfo(B);
   Check((Info.Major = 4) and (Info.Platform = 'basalt'), 'firmware version parsing');
+  B[45] := 1;
+  Check(ParseWatchInfo(B).Platform = 'basalt', 'firmware flags do not select hardware');
+  Stream := TFileStream.Create(Root + '/version.bin', fmOpenRead);
+  try
+    SetLength(B, Stream.Size);
+    Stream.ReadBuffer(B[0], Length(B));
+  finally Stream.Free; end;
+  Info := ParseWatchInfo(B);
+  Check((Info.Firmware = 'v3.13.3-rbl') and (Info.Major = 3) and
+    (Info.Platform = 'aplite'), 'packed firmware-3 version response');
+end;
+
+procedure TestTempPBW(const Root: string);
+var Temp, Other: TTempPBWFile; Source: TFileStream; PBW: TPBW;
+  Filename: string; Details: Stat; Failed: Boolean;
+begin
+  Temp := TTempPBWFile.Create(Root);
+  Filename := Temp.Filename;
+  try
+    Check(FileExists(Filename), 'temporary PBW file created before download');
+    Check(fpStat(Filename, Details) = 0, 'temporary PBW file stat');
+    Check((Details.st_mode and &777) = &600, 'temporary PBW file private permissions');
+    Source := TFileStream.Create(Root + '/test.pbw', fmOpenRead);
+    try
+      Temp.CopyFrom(Source, 0);
+      Check(Temp.Size = Source.Size, 'temporary PBW stream size');
+    finally Source.Free; end;
+    Other := TTempPBWFile.Create(Root);
+    try Check(Other.Filename <> Filename, 'separate downloads have separate files');
+    finally Other.Free; end;
+    PBW := TPBW.Create(Filename, 'basalt');
+    try Check(PBW.Item.UUID = AppUUID, 'downloaded PBW parsed while temporary stream is open');
+    finally PBW.Free; end;
+  finally Temp.Free; end;
+  Check(not FileExists(Filename), 'temporary PBW removed after download');
+  Temp := TTempPBWFile.Create(Root);
+  Filename := Temp.Filename;
+  try
+    try raise Exception.Create('Download failed');
+    finally FreeAndNil(Temp); end;
+  except end;
+  Check(not FileExists(Filename), 'temporary PBW removed after failure');
+  Failed := False;
+  try Temp := TTempPBWFile.Create(Root + '/missing-directory'); Temp.Free;
+  except Failed := True; end;
+  Check(Failed, 'unavailable temporary directory reported');
 end;
 
 procedure TestInventory;
@@ -219,6 +266,9 @@ begin
       try InstallWatchApp(L, PBW, True, nil); except Failed := True; end;
       Check(Failed and (L.Aborts = 1) and (L.Commits = 0), 'failed transfer aborted');
     finally L.Free; end;
+  finally PBW.Free; end;
+  PBW := TPBW.Create(Root + '/legacy.pbw', 'aplite');
+  try Check(PBW.Item.UUID = AppUUID, 'legacy app header UUID and root manifest');
   finally PBW.Free; end;
   Failed := False;
   try PBW := TPBW.Create(Root + '/bad.pbw', 'basalt'); PBW.Free;
@@ -382,10 +432,11 @@ begin
     Halt(0);
   end;
   TestBytesAndCRC;
-  TestInfo;
+  TestInfo(ParamStr(1));
   TestInventory;
   TestTLS;
   TestPBW(ParamStr(1));
+  TestTempPBW(ParamStr(1));
   TestCatalogAndSettings;
   TestDaemon(ParamStr(1));
   TestWatchAccess(ParamStr(1));

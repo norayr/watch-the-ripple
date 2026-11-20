@@ -23,12 +23,17 @@ def crc(data):
 
 root = pathlib.Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix="ripple-ui-", dir="/tmp/opencode" if pathlib.Path("/tmp/opencode").is_dir() else None) as temp:
+    firmware = struct.pack(
+        ">I32s8sBBB", 1, b"v3.13.3-rbl", b"12345678", 0, 5, 1
+    )
+    pathlib.Path(temp, "version.bin").write_bytes(b"\x01" + firmware + firmware)
     binary = bytearray(129)
     binary[:8] = b"PBLAPP\0\0"
+    binary[8:10] = bytes([0x10, 0])
     binary[10:14] = bytes([3, 0, 1, 2])
     binary[24:32] = b"Test app"
     struct.pack_into("<I", binary, 96, 9)
-    binary[108:124] = uuid.UUID("00112233-4455-6677-8899-aabbccddeeff").bytes
+    binary[104:120] = uuid.UUID("00112233-4455-6677-8899-aabbccddeeff").bytes
     parts = {"application": ("pebble-app.bin", binary), "resources": ("app_resources.pbpack", b"abc" * 1400), "worker": ("pebble-worker.bin", b"worker!")}
     manifest = {key: {"name": name, "size": len(data), "crc": crc(data)} for key, (name, data) in parts.items()}
     for filename in ["test.pbw", "bad.pbw"]:
@@ -38,6 +43,12 @@ with tempfile.TemporaryDirectory(prefix="ripple-ui-", dir="/tmp/opencode" if pat
             archive.writestr("basalt/manifest.json", json.dumps(manifest))
             for name, data in parts.values():
                 archive.writestr(f"basalt/{name}", data)
+    legacy = binary[:100] + bytearray(4) + binary[100:]
+    legacy[8:10] = bytes([8, 1])
+    legacy_manifest = {"application": {"name": "pebble-app.bin", "size": len(legacy), "crc": crc(legacy)}}
+    with zipfile.ZipFile(f"{temp}/legacy.pbw", "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(legacy_manifest))
+        archive.writestr("pebble-app.bin", legacy)
     control = pathlib.Path(temp) / "control"
     control.write_text('''#!/bin/sh
 set -eu

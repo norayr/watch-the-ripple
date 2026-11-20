@@ -33,7 +33,8 @@ type
 implementation
 
 uses ripple_catalog, ripple_settings, ripple_http, ripple_pbw,
-  ripple_watch_link, ripple_watch_apps, ripple_daemon, ripple_watch_access, wtr_config;
+  ripple_watch_link, ripple_watch_apps, ripple_daemon, ripple_watch_access,
+  ripple_temp, wtr_config;
 
 constructor TRippleWorker.Create(Operation: TRippleOperation; const Item: TRippleItem);
 begin
@@ -70,7 +71,7 @@ begin
 end;
 
 procedure TRippleWorker.RunOperation;
-var Address, Temp, LockPath: string; HTTP: TRippleHTTP; Stream: TFileStream;
+var Address, LockPath: string; HTTP: TRippleHTTP; Download: TTempPBWFile;
   Link: TWatchLink; Daemon: TDaemonPause; PBW: TPBW; Banks: Cardinal;
   Access: TWatchAccess; Connector: TWatchConnector;
 begin
@@ -91,19 +92,16 @@ begin
   if not ForceDirectories(LockPath) then raise Exception.Create('Cannot create settings directory');
   Access := TWatchAccess.Create(LockPath + 'watch-access.lock');
   try
-    Temp := '';
+    Download := nil;
     try
       if FOperation = roInstall then
       begin
         if FItem.DownloadURL = '' then raise Exception.Create('No PBW download is available');
         Progress('Downloading PBW', 0);
-        Temp := GetTempFileName;
-        Stream := TFileStream.Create(Temp, fmOpenWrite);
-        try
-          HTTP := TRippleHTTP.Create;
-          try HTTP.Get(FItem.DownloadURL, Stream, 32 * 1024 * 1024);
-          finally HTTP.Free; end;
-        finally Stream.Free; end;
+        Download := TTempPBWFile.Create;
+        HTTP := TRippleHTTP.Create;
+        try HTTP.Get(FItem.DownloadURL, Download, 32 * 1024 * 1024);
+        finally HTTP.Free; end;
       end;
       Daemon := TDaemonPause.Create;
       try
@@ -121,7 +119,7 @@ begin
             case FOperation of
               roInstall:
                 begin
-                  PBW := TPBW.Create(Temp, Info.Platform);
+                  PBW := TPBW.Create(Download.Filename, Info.Platform);
                   try
                     if (FItem.UUID <> '') and (LowerCase(FItem.UUID) <> PBW.Item.UUID) then
                       raise Exception.Create('PBW UUID does not match the catalog entry');
@@ -136,14 +134,18 @@ begin
                   SaveManagedApp(Address, FItem, True);
                   Note := 'Removed ' + FItem.Title;
                 end;
-              roIdentify: Note := Info.Platform + ' / ' + Info.Firmware;
+              roIdentify:
+                begin
+                  if Info.Platform = '' then Note := 'Unknown hardware' else Note := Info.Platform;
+                  Note := Note + ' / ' + Info.Firmware;
+                end;
             end;
             if FOperation in [roInstalled, roInstall, roRemove] then
               if Info.Major >= 3 then
               begin
                 Items := LoadManagedApps(Address);
                 if Note <> '' then Note := Note + '. ';
-                Note := Note + 'Saved Ripple records only; firmware 3+ cannot report a live app inventory.';
+                Note := Note + 'Saved Ripple registrations on this phone (' + Info.Firmware + ').';
               end
               else
               begin
@@ -164,7 +166,7 @@ begin
         end;
       finally Daemon.Free; end;
     finally
-      if Temp <> '' then DeleteFile(Temp);
+      Download.Free;
     end;
   finally Access.Free; end;
 end;

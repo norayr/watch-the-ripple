@@ -116,7 +116,7 @@ begin
   RequireBytes(Data, 0, 95);
   if Data[0] <> 1 then raise Exception.Create('Invalid watch version response');
   Result.Firmware := FixedText(Data, 5, 32);
-  Result.Platform := PlatformForHardware(Data[45]);
+  Result.Platform := PlatformForHardware(Data[46]);
   S := Result.Firmware;
   if Copy(S, 1, 1) = 'v' then Delete(S, 1, 1);
   I := Pos('.', S);

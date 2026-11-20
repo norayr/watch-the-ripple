@@ -169,10 +169,9 @@ before using watch controls, and avoid running `wtr start` during a transfer.
 Ripple confirms that the daemon has stopped before connecting and retries a
 busy RFCOMM channel briefly while the previous connection is being released.
 
-Firmware 2 supplies a live app-bank inventory. Firmware 3 and later use BlobDB
-app registration and AppFetch transfers, and cannot return that inventory.
-For these versions, the list explicitly shows saved Ripple registration records
-for the configured Bluetooth address. Apps installed by another companion are
+Firmware 2 uses a live app-bank inventory. With firmware 3 and later, Ripple uses
+BlobDB app registration and AppFetch transfers. Its app list shows saved
+registration records for the configured Bluetooth address. Apps installed by another companion are
 absent; records can become stale after a watch reset or removal elsewhere.
 A failed transfer can leave an app registration, which can be removed from the
 records view and then installed again.

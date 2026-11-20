@@ -90,7 +90,7 @@ begin
       Result[I].Title := Ini.ReadString(Sections[I], 'title', Sections[I]);
       Result[I].Author := Ini.ReadString(Sections[I], 'author', '');
       Result[I].Version := Ini.ReadString(Sections[I], 'version', '');
-      Result[I].Description := 'Saved Ripple app registration; watch inventory unavailable on firmware 3+. A failed transfer can leave a registration without its binary.';
+      Result[I].Description := 'App registration saved by Ripple on this phone. This record is not a fresh watch inventory; a failed transfer can leave a registration without its binary.';
     end;
   finally Sections.Free; Ini.Free; end;
 end;

@@ -73,7 +73,8 @@ begin
 end;
 
 constructor TPBW.Create(const Filename, Platform: string);
-var Prefix, S, Name: string; Manifest, Part: TJSONData; B: TRippleBytes; I: Integer;
+var Prefix, S, Name: string; Manifest, Part: TJSONData; B: TRippleBytes;
+  I, UUIDOffset: Integer;
 
   function ReadPart(const Key: string; Required: Boolean): TRippleBytes;
   var O: TJSONObject; Size, CRC: Int64;
@@ -125,11 +126,22 @@ begin
   finally
     Manifest.Free;
   end;
-  RequireBytes(Binary, 0, 124);
+  RequireBytes(Binary, 0, 100);
   if FixedText(Binary, 0, 8) <> 'PBLAPP' then raise Exception.Create('Invalid Pebble app binary');
+  case Binary[8] of
+    $08:
+      begin
+        if Binary[9] < 1 then raise Exception.Create('PBW app header has no UUID');
+        UUIDOffset := 108;
+      end;
+    // Header version 9 removes the relocation-list-start field before the UUID.
+    $09, $10: UUIDOffset := 104;
+    else raise Exception.Create('Unsupported PBW app header version');
+  end;
+  RequireBytes(Binary, UUIDOffset, 16);
   Item.Title := FixedText(Binary, 24, 32);
   Item.Author := FixedText(Binary, 56, 32);
-  Item.UUID := UUIDText(Binary, 108);
+  Item.UUID := UUIDText(Binary, UUIDOffset);
   Item.Flags := Read32LE(Binary, 96);
   Item.Version := IntToStr(Binary[12]) + '.' + IntToStr(Binary[13]);
   Metadata := UUIDBytes(Item.UUID);

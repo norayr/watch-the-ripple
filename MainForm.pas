@@ -223,7 +223,7 @@ procedure TFormMain.InstallClick(Sender: TObject);
 begin
   if FList.Selected = nil then Exit;
   if MessageDlg('Install on watch', 'Install ' + FItems[FList.Selected.Index].Title +
-    '? Notifications pause during watch access. Phone-side JavaScript and configuration pages are not supported.',
+    '? Notifications pause temporarily during watch access, then resume if wtrd was running. Phone-side JavaScript and configuration pages are not supported.',
     mtConfirmation, [mbYes, mbNo], 0) = mrYes then BeginOperation(roInstall);
 end;
 
