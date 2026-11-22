@@ -1,0 +1,30 @@
+Description: Loading GnuTLS through its runtime SONAME
+ The FPC dynamic binding defaults to libgnutls.so, which is supplied by
+ the development package. Load libgnutls.so.30 before constructing the
+ socket handler so HTTPS works with the runtime library alone. Document
+ the Excalibur runtime package name.
+Author: Norayr Chilingarian <norayr@arnet.am>
+Forwarded: no
+Last-Update: 2026-11-22
+--- a/ui/ripple_http.pas
++++ b/ui/ripple_http.pas
+@@ -107,6 +107,9 @@
+ var SSL: TRippleTLSHandler;
+ begin
+   if not UseSSL then raise Exception.Create('TLS is required');
++  // The unversioned library name is supplied only by the development package.
++  if not GnuTLSloaded then
++    LoadGnuTLS('libgnutls.so.30');
+   SSL := TRippleTLSHandler.Create;
+   Handler := SSL;
+   SSL.RetryTimeoutMS := FClient.IOTimeout;
+--- a/README.md
++++ b/README.md
+@@ -264,6 +264,6 @@
+ HTTPS uses FPC's `TFPHTTPClient` and `gnutlssockets`, with the system CA bundle
+ and GnuTLS certificate/hostname verification; runtime packages include
+-`ca-certificates` and `libgnutls30`.
++`ca-certificates` and `libgnutls30t64`.
+
+ ```sh
+ make

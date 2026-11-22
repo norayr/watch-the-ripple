@@ -1,3 +1,11 @@
+ripple (0.2.0-3+leste1) unstable; urgency=medium
+
+  * Requiring libgnutls30t64 for the Excalibur runtime library.
+  * Loading GnuTLS through its runtime SONAME without requiring development
+    package symlinks.
+
+ -- Norayr Chilingarian <norayr@arnet.am>  Sun, 22 Nov 2026 06:58:35 +0400
+
 ripple (0.2.0-2+leste1) unstable; urgency=medium
 
   * Adding fp-units-misc to provide FastHTMLParser for Lazarus clipboard support.

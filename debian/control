@@ -29,7 +29,7 @@ Depends:
  bluez,
  libsqlite3-0,
  ca-certificates,
- libgnutls30
+ libgnutls30t64
 Recommends: dbus-bin
 Description: Pebble watch companion for Maemo Leste
  Ripple forwards incoming messages and Modest IMAP email notifications to
